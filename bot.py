@@ -67,6 +67,7 @@ async def fetch_image(session: aiohttp.ClientSession, url: str) -> bytes | None:
         async with session.get(url) as resp:
             if resp.status == 200 and resp.headers.get("Content-Type", "").startswith("image"):
                 return await resp.read()
+            logger.debug("%s returned status %s", url, resp.status)
     except Exception as exc:
         logger.warning("Failed to fetch %s: %s", url, exc)
     return None
@@ -81,6 +82,7 @@ async def on_ready():
 
 
 async def scrape_loop():
+    logger.info("Starting scrape loop")
     emoji_list = list(emoji.EMOJI_DATA.keys())
     async with aiohttp.ClientSession() as session:
         while True:
@@ -92,6 +94,8 @@ async def scrape_loop():
                 tested_urls.add(url)
                 with open(TESTED_FILE, "a", encoding="utf-8") as f:
                     f.write(url + "\n")
+
+                logger.info("Testing %s", url)
 
                 image_data = await fetch_image(session, url)
                 if image_data is None:
