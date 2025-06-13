@@ -73,7 +73,9 @@ async def fetch_image(session: aiohttp.ClientSession, url: str) -> bytes | None:
 
 
 
+@client.event
 async def on_ready():
+    """Start the scraping loop once the bot is ready."""
     logger.info("Logged in as %s", client.user)
     client.loop.create_task(scrape_loop())
 
@@ -96,7 +98,7 @@ async def scrape_loop():
                     continue
 
                 logger.info("Found image %s", url)
-                if CHANNEL_ID
+                if CHANNEL_ID:
                     channel = client.get_channel(CHANNEL_ID)
                     if channel:
                         file = discord.File(io.BytesIO(image_data), filename="image.png")
