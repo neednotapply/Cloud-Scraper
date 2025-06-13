@@ -8,7 +8,6 @@ import io
 import aiohttp
 import emoji
 import discord
-from discord.ext import commands
 
 
 CONFIG_FILE = "config.json"
@@ -52,7 +51,8 @@ CHANNEL_ID = int(config.get("channel_id", 0))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("fakecrime_bot")
 
-bot = commands.Bot(command_prefix="!")
+intents = discord.Intents.default()
+client = discord.Client(intents=intents)
 
 tested_urls = set()
 if os.path.exists(TESTED_FILE):
@@ -70,10 +70,10 @@ async def fetch_image(session: aiohttp.ClientSession, url: str) -> bytes | None:
     return None
 
 
-@bot.event
+@client.event
 async def on_ready():
-    logger.info("Logged in as %s", bot.user)
-    bot.loop.create_task(scrape_loop())
+    logger.info("Logged in as %s", client.user)
+    client.loop.create_task(scrape_loop())
 
 
 async def scrape_loop():
@@ -95,7 +95,7 @@ async def scrape_loop():
 
                 logger.info("Found image %s", url)
                 if CHANNEL_ID:
-                    channel = bot.get_channel(CHANNEL_ID)
+                    channel = client.get_channel(CHANNEL_ID)
                     if channel:
                         file = discord.File(io.BytesIO(image_data), filename="image.png")
                         embed = discord.Embed(url=url)
@@ -107,4 +107,4 @@ async def scrape_loop():
 if __name__ == "__main__":
     if not TOKEN or not CHANNEL_ID:
         raise RuntimeError("token and channel_id must be set in config.json")
-    bot.run(TOKEN)
+    client.run(TOKEN)
