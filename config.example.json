@@ -1,5 +1,7 @@
 {
   "token": "YOUR_DISCORD_BOT_TOKEN",
   "channel_id": 123456789012345678,
-  "num_emojis": 5
+  "urls": {
+    "https://ibb.co": 8
+  }
 }
