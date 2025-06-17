@@ -6,35 +6,12 @@ import logging
 import io
 
 import aiohttp
-import emoji
+import re
+import string
 import discord
 
 
 CONFIG_FILE = "config.json"
-
-DOMAINS = [
-    "adult.army",
-    "arabs-for.sale",
-    "astronaut.ink",
-    "bashscript.lol",
-    "crinchy.charity",
-    "fakecri.me",
-    "fakecrime.bio",
-    "fakecrime.lol",
-    "fakecrime.pics",
-    "fakecrime.tools",
-    "fraud.money",
-    "grabify.live",
-    "grablify.ink",
-    "grablify.org",
-    "hot-tube.live",
-    "ip-finder.wiki",
-    "milf.charity",
-    "neverlose.wiki",
-    "sharex.rocks",
-    "shellscript.lol",
-    "tailwindcss.lol",
-]
 
 TESTED_FILE = "tested_urls.txt"
 
@@ -44,7 +21,10 @@ if not os.path.exists(CONFIG_FILE):
 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
     config = json.load(f)
 
-NUM_EMOJIS = int(config.get("num_emojis", 5))
+URL_MAP = {
+    url.rstrip("/"): int(length)
+    for url, length in config.get("urls", {"https://ibb.co": 8}).items()
+}
 TOKEN = config.get("token")
 CHANNEL_ID = int(config.get("channel_id", 0))
 
@@ -73,6 +53,29 @@ async def fetch_image(session: aiohttp.ClientSession, url: str) -> bytes | None:
     return None
 
 
+async def fetch_ibb_image(
+    session: aiohttp.ClientSession, base_url: str, code: str
+) -> bytes | None:
+    page_url = f"{base_url.rstrip('/')}/{code}"
+    try:
+        async with session.get(page_url) as resp:
+            if resp.status != 200:
+                logger.debug("%s returned status %s", page_url, resp.status)
+                return None
+            text = await resp.text()
+    except Exception as exc:
+        logger.warning("Failed to fetch %s: %s", page_url, exc)
+        return None
+
+    match = re.search(r'<meta property="og:image" content="([^\"]+)"', text)
+    if not match:
+        logger.debug("No og:image found for %s", page_url)
+        return None
+
+    image_url = match.group(1)
+    return await fetch_image(session, image_url)
+
+
 
 @client.event
 async def on_ready():
@@ -83,13 +86,14 @@ async def on_ready():
 
 async def scrape_loop():
     logger.info("Starting scrape loop")
-    emoji_list = list(emoji.EMOJI_DATA.keys())
+    charset = string.ascii_letters + string.digits
     async with aiohttp.ClientSession() as session:
         while True:
-            emoji_str = "".join(random.choice(emoji_list) for _ in range(NUM_EMOJIS))
-            for domain in DOMAINS:
-                url = f"https://i.{domain}/{emoji_str}"
+            for base_url, length in URL_MAP.items():
+                code = "".join(random.choice(charset) for _ in range(length))
+                url = f"{base_url.rstrip('/')}/{code}"
                 if url in tested_urls:
+                    await asyncio.sleep(0)
                     continue
                 tested_urls.add(url)
                 with open(TESTED_FILE, "a", encoding="utf-8") as f:
@@ -97,8 +101,9 @@ async def scrape_loop():
 
                 logger.info("Testing %s", url)
 
-                image_data = await fetch_image(session, url)
+                image_data = await fetch_ibb_image(session, base_url, code)
                 if image_data is None:
+                    await asyncio.sleep(0)
                     continue
 
                 logger.info("Found image %s", url)
