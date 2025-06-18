@@ -161,10 +161,16 @@ async def fetch_playwright_image(browser: Browser, url: str, headers=None) -> by
 async def fetch_imgur_image(session: aiohttp.ClientSession, url: str, headers=None) -> bytes | None:
     try:
         async with session.get(url, headers=headers, timeout=10) as resp:
-            text = await resp.text()
             if resp.status != 200:
                 logger.info("Checked %s -> HTTP %s", url, resp.status)
                 return None
+
+            content_type = resp.headers.get("Content-Type", "")
+            if content_type.startswith("image"):
+                logger.info("Found image %s (direct)", url)
+                return await resp.read()
+
+            text = await resp.text(errors="ignore")
             if "The requested page could not be found" in text:
                 logger.info("Checked %s -> not found (Imgur text)", url)
                 return None
@@ -172,6 +178,7 @@ async def fetch_imgur_image(session: aiohttp.ClientSession, url: str, headers=No
             if m:
                 image_url = m.group(1)
                 return await fetch_image(session, image_url, headers=headers)
+            logger.info("Checked %s -> not found (missing og:image)", url)
     except asyncio.TimeoutError:
         logger.warning("Checked %s -> not found (timeout)", url)
     except Exception as exc:
@@ -203,7 +210,8 @@ async def scrape_loop():
                         charset = _apply_heuristics(domain, ALL_CHARS, length)
 
                         while True:
-                            headers = {"User-Agent": random.choice(USER_AGENTS)}
+                            ua = settings.get("user_agent")
+                            headers = {"User-Agent": ua or random.choice(USER_AGENTS)}
                             code = generate_code(domain, length, charset)
                             url = f"{base_url}/{code}"
                             if url in tested_urls:
