@@ -31,7 +31,7 @@ TOKEN = config.get("token")
 CHANNEL_ID = int(config.get("channel_id", 0))
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("fakecrime_bot")
+logger = logging.getLogger("bot")
 
 
 intents = discord.Intents.default()
@@ -88,9 +88,11 @@ async def fetch_image(session: aiohttp.ClientSession, url: str) -> bytes | None:
         async with session.get(url) as resp:
             if resp.status == 200 and resp.headers.get("Content-Type", "").startswith("image"):
                 return await resp.read()
-            logger.debug("%s returned status %s", url, resp.status)
+            logger.info("Image request %s -> HTTP %s", url, resp.status)
+    except asyncio.TimeoutError:
+        logger.warning("Image request %s timed out", url)
     except Exception as exc:
-        logger.warning("Failed to fetch %s: %s", url, exc)
+        logger.warning("Image request %s failed: %s", url, exc)
     return None
 
 
@@ -101,26 +103,35 @@ async def fetch_ibb_image(
     try:
         async with session.get(page_url) as resp:
             if resp.status != 200:
-                logger.debug("%s returned status %s", page_url, resp.status)
+                logger.info("Testing %s -> HTTP %s", page_url, resp.status)
                 return None
             text = await resp.text()
+    except asyncio.TimeoutError:
+        logger.warning("Testing %s timed out", page_url)
+        return None
     except Exception as exc:
-        logger.warning("Failed to fetch %s: %s", page_url, exc)
+        logger.warning("Testing %s failed: %s", page_url, exc)
         return None
 
     match = re.search(r'<meta property="og:image" content="([^\"]+)"', text)
     if not match:
-        logger.debug("No og:image found for %s", page_url)
+        logger.info("Testing %s -> missing og:image", page_url)
         return None
 
     image_url = match.group(1)
-    return await fetch_image(session, image_url)
+    image_data = await fetch_image(session, image_url)
+    if image_data is None:
+        return None
+    logger.info("Testing %s -> success", page_url)
+    return image_data
 
 
 
 @client.event
 async def on_ready():
     """Start the scraping loop once the bot is ready."""
+    global logger
+    logger = logging.getLogger(str(client.user))
     logger.info("Logged in as %s", client.user)
     client.loop.create_task(scrape_loop())
 
