@@ -138,7 +138,10 @@ async def _inner_fetch_playwright_image(browser: Browser, url: str, headers=None
             logger.info("Checked %s -> not found (Puu.sh body)", url)
             return None
 
-        image_url = await page.get_attribute('meta[property="og:image"]', 'content', timeout=3000)
+        try:
+            image_url = await page.get_attribute('meta[property="og:image"]', 'content', timeout=3000)
+        except Exception:
+            image_url = None
     finally:
         await page.close()
     if image_url:
@@ -155,9 +158,33 @@ async def fetch_playwright_image(browser: Browser, url: str, headers=None) -> by
         logger.warning("Checked %s -> error: %s", url, exc)
     return None
 
+async def fetch_imgur_image(session: aiohttp.ClientSession, url: str, headers=None) -> bytes | None:
+    try:
+        async with session.get(url, headers=headers, timeout=10) as resp:
+            text = await resp.text()
+            if resp.status != 200:
+                logger.info("Checked %s -> HTTP %s", url, resp.status)
+                return None
+            if "The requested page could not be found" in text:
+                logger.info("Checked %s -> not found (Imgur text)", url)
+                return None
+            m = re.search(r'<meta property="og:image" content="([^"]+)"', text)
+            if m:
+                image_url = m.group(1)
+                return await fetch_image(session, image_url, headers=headers)
+    except asyncio.TimeoutError:
+        logger.warning("Checked %s -> not found (timeout)", url)
+    except Exception as exc:
+        logger.warning("Checked %s -> error: %s", url, exc)
+    return None
+
 SCRAPER_MAP = {
-    domain: lambda browser, *_args: fetch_playwright_image(browser, _args[1], headers=_args[3])
-    for domain in ["ibb.co", "puu.sh", "imgur.com", "gyazo.com", "cl.ly", "prnt.sc"]
+    "ibb.co": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
+    "puu.sh": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
+    "imgur.com": lambda browser, session, url, code, headers: fetch_imgur_image(session, url, headers=headers),
+    "gyazo.com": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
+    "cl.ly": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
+    "prnt.sc": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
 }
 
 async def scrape_loop():
