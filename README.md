@@ -4,7 +4,7 @@ This bot attempts to discover public images hosted on [imgBB](https://imgbb.com)
 
 ## Configuration
 
-Copy `config.example.json` to `config.json` and fill in your Discord bot token and the channel ID you want to post found images to. Add one or more target URLs with their associated code length under `urls`.
+Copy `config.example.json` to `config.json` and fill in your Discord bot token and the channel ID you want to post found images to. Add one or more target URLs with their associated code length under `urls`. Optional settings such as `rate_limit` and `user_agent` can be supplied per URL.
 
 ```
 {
