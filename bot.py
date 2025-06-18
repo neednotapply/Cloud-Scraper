@@ -11,7 +11,7 @@ from collections import Counter, defaultdict
 
 import aiohttp
 import discord
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Browser
 
 CONFIG_FILE = "config.json"
 TESTED_FILE = "tested_urls.txt"
@@ -109,48 +109,46 @@ async def fetch_image(session: aiohttp.ClientSession, url: str, headers=None) ->
         logger.warning("Checked %s -> error: %s", url, exc)
     return None
 
-async def _inner_fetch_playwright_image(url: str, headers=None) -> bytes | None:
-    async with async_playwright() as p:
-        browser = await p.chromium.launch()
-        try:
-            page = await browser.new_page()
-            await page.set_extra_http_headers(headers or {})
-            await page.goto(url, timeout=10000, wait_until="domcontentloaded")
-
-            try:
-                await page.click('button:has-text("Continue without supporting us")', timeout=3000)
-            except:
-                pass
-
-            title = await page.title()
-            if "Gyazo - Not Found" in title:
-                logger.info("Checked %s -> not found (Gyazo title)", url)
-                return None
-            if title.startswith("That page doesn't exist"):
-                logger.info("Checked %s -> not found (imgbb title)", url)
-                return None
-            if title.startswith("Zight — Not Found"):
-                logger.info("Checked %s -> not found (cl.ly title)", url)
-                return None
-            if await page.locator('p.Toast2-description', has_text="The requested page could not be found").count() > 0:
-                logger.info("Checked %s -> not found (Imgur toast popup)", url)
-                return None
-            content = await page.content()
-            if "That puush could not be found." in content:
-                logger.info("Checked %s -> not found (Puu.sh body)", url)
-                return None
-
-            image_url = await page.get_attribute('meta[property="og:image"]', 'content', timeout=3000)
-        finally:
-            await browser.close()
-        if image_url:
-            async with aiohttp.ClientSession() as session:
-                return await fetch_image(session, image_url, headers=headers)
-        return None
-
-async def fetch_playwright_image(url: str, headers=None) -> bytes | None:
+async def _inner_fetch_playwright_image(browser: Browser, url: str, headers=None) -> bytes | None:
+    page = await browser.new_page()
     try:
-        return await asyncio.wait_for(_inner_fetch_playwright_image(url, headers), timeout=15)
+        await page.set_extra_http_headers(headers or {})
+        await page.goto(url, timeout=10000, wait_until="domcontentloaded")
+
+        try:
+            await page.click('button:has-text("Continue without supporting us")', timeout=3000)
+        except:
+            pass
+
+        title = await page.title()
+        if "Gyazo - Not Found" in title:
+            logger.info("Checked %s -> not found (Gyazo title)", url)
+            return None
+        if title.startswith("That page doesn't exist"):
+            logger.info("Checked %s -> not found (imgbb title)", url)
+            return None
+        if title.startswith("Zight — Not Found"):
+            logger.info("Checked %s -> not found (cl.ly title)", url)
+            return None
+        if await page.locator('p.Toast2-description', has_text="The requested page could not be found").count() > 0:
+            logger.info("Checked %s -> not found (Imgur toast popup)", url)
+            return None
+        content = await page.content()
+        if "That puush could not be found." in content:
+            logger.info("Checked %s -> not found (Puu.sh body)", url)
+            return None
+
+        image_url = await page.get_attribute('meta[property="og:image"]', 'content', timeout=3000)
+    finally:
+        await page.close()
+    if image_url:
+        async with aiohttp.ClientSession() as session:
+            return await fetch_image(session, image_url, headers=headers)
+    return None
+
+async def fetch_playwright_image(browser: Browser, url: str, headers=None) -> bytes | None:
+    try:
+        return await asyncio.wait_for(_inner_fetch_playwright_image(browser, url, headers), timeout=15)
     except asyncio.TimeoutError:
         logger.warning("Checked %s -> timeout (global hard cap)", url)
     except Exception as exc:
@@ -158,7 +156,7 @@ async def fetch_playwright_image(url: str, headers=None) -> bytes | None:
     return None
 
 SCRAPER_MAP = {
-    domain: lambda *_args, **_kwargs: fetch_playwright_image(_args[1], headers=_args[3])
+    domain: lambda browser, *_args: fetch_playwright_image(browser, _args[1], headers=_args[3])
     for domain in ["ibb.co", "puu.sh", "imgur.com", "gyazo.com", "cl.ly", "prnt.sc"]
 }
 
@@ -166,7 +164,8 @@ async def scrape_loop():
     global scrape_count
     logger.info("Starting scrape loop")
     last_log = time.time()
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession() as session, async_playwright() as p:
+        browser = await p.chromium.launch()
         while True:
             for base_url, settings in URL_MAP.items():
                 domain = base_url.split("//")[-1].split("/")[0]
@@ -193,7 +192,7 @@ async def scrape_loop():
 
                     try:
                         image_data = await asyncio.wait_for(
-                            fetcher(session, base_url + "/" + code, code, headers),
+                            fetcher(browser, session, base_url + "/" + code, code, headers),
                             timeout=15
                         )
                     except asyncio.TimeoutError:
