@@ -43,6 +43,7 @@ logger = logging.getLogger("bot")
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
+scrape_task = None
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -54,10 +55,11 @@ USER_AGENTS = [
 
 @client.event
 async def on_ready():
-    global logger
+    global logger, scrape_task
     logger = logging.getLogger(str(client.user))
     logger.info("Logged in as %s", client.user)
-    client.loop.create_task(scrape_loop())
+    if scrape_task is None or scrape_task.done():
+        scrape_task = client.loop.create_task(scrape_loop())
 
 tested_urls = set()
 if os.path.exists(TESTED_FILE):
