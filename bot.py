@@ -154,6 +154,14 @@ async def _inner_fetch_playwright_image(browser: Browser, url: str, headers=None
                 image_url = await page.get_attribute('meta[property="og:image"]', 'content', timeout=3000)
             except Exception:
                 image_url = None
+
+            # If this is a prnt.sc link, ensure the image is hosted on
+            # image.prntscr.com. Links pointing elsewhere (e.g. imgur) usually
+            # indicate the screenshot no longer exists.
+            if url.startswith("https://prnt.sc") and image_url:
+                if not image_url.startswith("https://image.prntscr.com"):
+                    logger.info("Checked %s -> not found (prnt.sc external host)", url)
+                    image_url = None
         finally:
             try:
                 await asyncio.shield(page.close())
