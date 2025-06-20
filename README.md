@@ -32,6 +32,7 @@ Install the requirements and run `bot.py`:
 
 ```
 pip install -r requirements.txt
+playwright install
 python bot.py
 ```
 
