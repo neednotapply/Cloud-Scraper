@@ -118,7 +118,8 @@ async def fetch_image(session: aiohttp.ClientSession, url: str, headers=None) ->
     return None
 
 async def _inner_fetch_playwright_image(browser: Browser, url: str, headers=None) -> bytes | None:
-    async with browser.new_context() as context:
+    context = await browser.new_context()
+    try:
         page = await context.new_page()
         try:
             await page.set_extra_http_headers(headers or {})
@@ -161,6 +162,8 @@ async def _inner_fetch_playwright_image(browser: Browser, url: str, headers=None
             async with aiohttp.ClientSession() as session:
                 return await fetch_image(session, image_url, headers=headers)
         return None
+    finally:
+        await context.close()
 
 async def fetch_playwright_image(browser: Browser, url: str, headers=None) -> bytes | None:
     try:
