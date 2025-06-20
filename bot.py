@@ -141,6 +141,39 @@ async def fetch_image(session: aiohttp.ClientSession, url: str, headers=None) ->
         logger.warning("Checked %s -> error: %s", url, exc)
     return None
 
+# --- Additional helpers for prnt.sc scraping taken from neednotapply/Screenshot_Stealer-Matrix ---
+async def prntsc_get_image_url(browser: Browser, url: str) -> str | None:
+    """Load a prnt.sc page with Playwright and extract the screenshot URL."""
+    async with browser.new_page() as page:
+        await page.goto(url)
+        try:
+            await page.wait_for_selector("#screenshot-image", timeout=5000)
+            image_url = await page.get_attribute("#screenshot-image", "src")
+        except Exception:
+            image_url = None
+        if image_url:
+            if image_url.startswith("//"):
+                image_url = "https:" + image_url
+            elif image_url.startswith("/"):
+                image_url = "https://prnt.sc" + image_url
+        return image_url
+
+async def prntsc_validate_image_url(session: aiohttp.ClientSession, image_url: str) -> bool:
+    """Return True if the given image URL returns HTTP 200."""
+    try:
+        async with session.head(image_url, timeout=5) as response:
+            return response.status == 200
+    except Exception:
+        return False
+
+async def fetch_prntsc_image(browser: Browser, session: aiohttp.ClientSession, url: str, headers=None) -> bytes | None:
+    image_url = await prntsc_get_image_url(browser, url)
+    if not image_url:
+        return None
+    if not await prntsc_validate_image_url(session, image_url):
+        return None
+    return await fetch_image(session, image_url, headers=headers)
+
 async def _inner_fetch_playwright_image(browser: Browser, url: str, headers=None) -> bytes | None:
     context = await browser.new_context()
     try:
@@ -242,7 +275,7 @@ SCRAPER_MAP = {
     "i.imgur.com": lambda browser, session, url, code, headers: fetch_imgur_image(session, url, headers=headers),
     "gyazo.com": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "cl.ly": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
-    "prnt.sc": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
+    "prnt.sc": lambda browser, session, url, code, headers: fetch_prntsc_image(browser, session, url, headers=headers),
 }
 
 async def scrape_loop():
