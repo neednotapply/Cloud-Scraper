@@ -7,6 +7,7 @@ import io
 import re
 import string
 import time
+import html
 from collections import Counter, defaultdict
 
 import aiohttp
@@ -23,12 +24,19 @@ if not os.path.exists(CONFIG_FILE):
 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
     config = json.load(f)
 
-URL_MAP = {
-    url.rstrip("/"): conf if isinstance(conf, dict) else {"length": int(conf)}
-    for url, conf in config.get("urls", {}).items()
-}
 TOKEN = config.get("token")
 CHANNEL_ID = int(config.get("channel_id", 0))
+
+# Built-in domain configuration
+DOMAINS = {
+    "ibb.co": {"base_url": "https://ibb.co", "length": 8, "rate_limit": 1.0},
+    "puu.sh": {"base_url": "https://puu.sh", "length": 6, "rate_limit": 1.0},
+    "imgur.com": {"base_url": "https://imgur.com", "length": 7, "rate_limit": 1.0},
+    "i.imgur.com": {"base_url": "https://i.imgur.com", "length": 7, "rate_limit": 1.0},
+    "gyazo.com": {"base_url": "https://gyazo.com", "length": 36, "rate_limit": 1.0},
+    "cl.ly": {"base_url": "https://cl.ly", "length": 6, "rate_limit": 1.0},
+    "prnt.sc": {"base_url": "https://prnt.sc", "length": 6, "rate_limit": 1.0},
+}
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("bot")
@@ -176,7 +184,9 @@ async def fetch_imgur_image(session: aiohttp.ClientSession, url: str, headers=No
                 return None
             m = re.search(r'<meta property="og:image" content="([^"]+)"', text)
             if m:
-                image_url = m.group(1)
+                image_url = html.unescape(m.group(1))
+                if image_url.startswith("//"):
+                    image_url = "https:" + image_url
                 return await fetch_image(session, image_url, headers=headers)
             logger.info("Checked %s -> not found (missing og:image)", url)
     except asyncio.TimeoutError:
@@ -189,6 +199,7 @@ SCRAPER_MAP = {
     "ibb.co": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "puu.sh": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "imgur.com": lambda browser, session, url, code, headers: fetch_imgur_image(session, url, headers=headers),
+    "i.imgur.com": lambda browser, session, url, code, headers: fetch_imgur_image(session, url, headers=headers),
     "gyazo.com": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "cl.ly": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "prnt.sc": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
@@ -198,13 +209,12 @@ async def scrape_loop():
     global scrape_count
     logger.info("Starting scrape loop")
     last_log = time.time()
-
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session, async_playwright() as p:
-                async with await p.chromium.launch() as browser:
-                    for base_url, settings in URL_MAP.items():
-                        domain = base_url.split("//")[-1].split("/")[0]
+    async with aiohttp.ClientSession() as session, async_playwright() as p:
+        async with await p.chromium.launch() as browser:
+            while True:
+                try:
+                    for domain, settings in DOMAINS.items():
+                        base_url = settings["base_url"]
                         length = settings.get("length", 6)
                         rate_limit = settings.get("rate_limit", 1.0)
                         charset = _apply_heuristics(domain, ALL_CHARS, length)
@@ -273,9 +283,9 @@ async def scrape_loop():
                             break
 
                         await asyncio.sleep(rate_limit)
-        except Exception:
-            logger.exception("Error in scrape_loop")
-            await asyncio.sleep(5)
+                except Exception:
+                    logger.exception("Error in scrape_loop")
+                    await asyncio.sleep(5)
 
 def generate_code(domain: str, length: int, charset: str) -> str:
     dist = code_distributions.get(domain, {}).get(length)

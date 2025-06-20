@@ -4,15 +4,25 @@ This bot attempts to discover public images hosted on [imgBB](https://imgbb.com)
 
 ## Configuration
 
-Copy `config.example.json` to `config.json` and fill in your Discord bot token and the channel ID you want to post found images to. Add one or more target URLs with their associated code length under `urls`. Optional settings such as `rate_limit` and `user_agent` can be supplied per URL.
+Copy `config.example.json` to `config.json` and fill in your Discord bot token and the channel ID you want to post found images to.
+
+The bot has a built-in list of supported services so no additional configuration is required.
+
+### Supported services
+
+| Domain | Code length |
+| ------ | ----------- |
+| ibb.co | 8 |
+| puu.sh | 6 |
+| imgur.com / i.imgur.com | 7 |
+| gyazo.com | 36 |
+| cl.ly | 6 |
+| prnt.sc | 6 |
 
 ```
 {
   "token": "YOUR_DISCORD_BOT_TOKEN",
-  "channel_id": 123456789012345678,
-  "urls": {
-    "https://ibb.co": 8
-  }
+  "channel_id": 123456789012345678
 }
 ```
 
@@ -26,4 +36,8 @@ python bot.py
 ```
 
 The bot will log attempts and post any discovered images to the configured Discord channel.
+
+### Imgur support
+
+Imgur pages and direct `i.imgur.com` links are handled automatically without any additional configuration. Both the page URL and direct image links such as `https://i.imgur.com/rMluBf1_d.webp` will be processed.
 
