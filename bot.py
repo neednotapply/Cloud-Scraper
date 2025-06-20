@@ -144,7 +144,8 @@ async def fetch_image(session: aiohttp.ClientSession, url: str, headers=None) ->
 # --- Additional helpers for prnt.sc scraping taken from neednotapply/Screenshot_Stealer-Matrix ---
 async def prntsc_get_image_url(browser: Browser, url: str) -> str | None:
     """Load a prnt.sc page with Playwright and extract the screenshot URL."""
-    async with browser.new_page() as page:
+    page = await browser.new_page()
+    try:
         await page.goto(url)
         try:
             await page.wait_for_selector("#screenshot-image", timeout=5000)
@@ -157,6 +158,11 @@ async def prntsc_get_image_url(browser: Browser, url: str) -> str | None:
             elif image_url.startswith("/"):
                 image_url = "https://prnt.sc" + image_url
         return image_url
+    finally:
+        try:
+            await page.close()
+        except Exception as exc:
+            logger.warning("Failed to close prnt.sc page %s: %s", url, exc)
 
 async def prntsc_validate_image_url(session: aiohttp.ClientSession, image_url: str) -> bool:
     """Return True if the given image URL returns HTTP 200."""
