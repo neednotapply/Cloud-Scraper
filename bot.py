@@ -118,44 +118,49 @@ async def fetch_image(session: aiohttp.ClientSession, url: str, headers=None) ->
     return None
 
 async def _inner_fetch_playwright_image(browser: Browser, url: str, headers=None) -> bytes | None:
-    page = await browser.new_page()
-    try:
-        await page.set_extra_http_headers(headers or {})
-        await page.goto(url, timeout=10000, wait_until="domcontentloaded")
-
+    async with browser.new_context() as context:
+        page = await context.new_page()
         try:
-            await page.click('button:has-text("Continue without supporting us")', timeout=3000)
-        except:
-            pass
+            await page.set_extra_http_headers(headers or {})
+            await page.goto(url, timeout=10000, wait_until="domcontentloaded")
 
-        title = await page.title()
-        if "Gyazo - Not Found" in title:
-            logger.info("Checked %s -> not found (Gyazo title)", url)
-            return None
-        if title.startswith("That page doesn't exist"):
-            logger.info("Checked %s -> not found (imgbb title)", url)
-            return None
-        if title.startswith("Zight — Not Found"):
-            logger.info("Checked %s -> not found (cl.ly title)", url)
-            return None
-        if await page.locator('p.Toast2-description', has_text="The requested page could not be found").count() > 0:
-            logger.info("Checked %s -> not found (Imgur toast popup)", url)
-            return None
-        content = await page.content()
-        if "That puush could not be found." in content:
-            logger.info("Checked %s -> not found (Puu.sh body)", url)
-            return None
+            try:
+                await page.click('button:has-text("Continue without supporting us")', timeout=3000)
+            except Exception:
+                pass
 
-        try:
-            image_url = await page.get_attribute('meta[property="og:image"]', 'content', timeout=3000)
-        except Exception:
-            image_url = None
-    finally:
-        await page.close()
-    if image_url:
-        async with aiohttp.ClientSession() as session:
-            return await fetch_image(session, image_url, headers=headers)
-    return None
+            title = await page.title()
+            if "Gyazo - Not Found" in title:
+                logger.info("Checked %s -> not found (Gyazo title)", url)
+                return None
+            if title.startswith("That page doesn't exist"):
+                logger.info("Checked %s -> not found (imgbb title)", url)
+                return None
+            if title.startswith("Zight — Not Found"):
+                logger.info("Checked %s -> not found (cl.ly title)", url)
+                return None
+            if await page.locator('p.Toast2-description', has_text="The requested page could not be found").count() > 0:
+                logger.info("Checked %s -> not found (Imgur toast popup)", url)
+                return None
+            content = await page.content()
+            if "That puush could not be found." in content:
+                logger.info("Checked %s -> not found (Puu.sh body)", url)
+                return None
+
+            try:
+                image_url = await page.get_attribute('meta[property="og:image"]', 'content', timeout=3000)
+            except Exception:
+                image_url = None
+        finally:
+            try:
+                await asyncio.shield(page.close())
+            except Exception as exc:
+                logger.warning("Failed to close page for %s: %s", url, exc)
+
+        if image_url:
+            async with aiohttp.ClientSession() as session:
+                return await fetch_image(session, image_url, headers=headers)
+        return None
 
 async def fetch_playwright_image(browser: Browser, url: str, headers=None) -> bytes | None:
     try:
