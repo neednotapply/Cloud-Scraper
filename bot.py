@@ -157,6 +157,7 @@ async def prntsc_get_image_url(browser: Browser, url: str) -> str | None:
                 image_url = await page.get_attribute("#screenshot-image", "src")
             except Exception:
                 image_url = None
+                logger.info("Checked %s -> not found (prnt.sc selector)", url)
             if image_url:
                 if image_url.startswith("//"):
                     image_url = "https:" + image_url
@@ -175,16 +176,32 @@ async def prntsc_validate_image_url(session: aiohttp.ClientSession, image_url: s
     """Return True if the given image URL returns HTTP 200."""
     try:
         async with session.head(image_url, timeout=5) as response:
-            return response.status == 200
-    except Exception:
+            valid = response.status == 200
+            if not valid:
+                logger.debug(
+                    "prnt.sc image HEAD check failed %s -> HTTP %s",
+                    image_url,
+                    response.status,
+                )
+            return valid
+    except Exception as exc:
+        logger.debug(
+            "prnt.sc image HEAD request error for %s: %s",
+            image_url,
+            exc,
+        )
         return False
 
 async def fetch_prntsc_image(browser: Browser, session: aiohttp.ClientSession, url: str, headers=None) -> bytes | None:
     image_url = await prntsc_get_image_url(browser, url)
     if not image_url:
+        logger.info("Checked %s -> not found (missing screenshot)", url)
         return None
+
     if not await prntsc_validate_image_url(session, image_url):
+        logger.info("Checked %s -> not found (image unavailable)", url)
         return None
+
     return await fetch_image(session, image_url, headers=headers)
 
 async def _inner_fetch_playwright_image(browser: Browser, url: str, headers=None) -> bytes | None:
