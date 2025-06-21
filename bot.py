@@ -45,28 +45,23 @@ intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 scrape_task = None
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-    "Mozilla/5.0 (X11; Linux x86_64)",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X)",
-    "Mozilla/5.0 (iPad; CPU OS 13_2 like Mac OS X)"
-]
-
-def start_scrape_loop() -> None:
-    """Ensure the scraping task is running."""
+async def start_scrape_loop() -> None:
+    """Ensure the scraping task is running and previous instances are closed."""
     global scrape_task
     if scrape_task is not None:
-        if scrape_task.done():
+        if not scrape_task.done():
+            logger.info("Cancelling existing scrape_loop task")
+            scrape_task.cancel()
+            try:
+                await scrape_task
+            except asyncio.CancelledError:
+                logger.info("Previous scrape_loop task cancelled")
+        else:
             exc = scrape_task.exception()
             if exc:
                 logger.error("scrape_loop exited with exception: %s", exc)
             else:
                 logger.info("scrape_loop completed")
-            scrape_task = None
-        else:
-            logger.info("scrape_loop task already running")
-            return
     logger.info("Starting scrape_loop task")
     scrape_task = client.loop.create_task(scrape_loop())
 
@@ -76,12 +71,12 @@ async def on_ready():
     global logger
     logger = logging.getLogger(str(client.user))
     logger.info("Logged in as %s", client.user)
-    start_scrape_loop()
+    await start_scrape_loop()
 
 @client.event
 async def on_resumed():
     logger.info("Gateway resumed")
-    start_scrape_loop()
+    await start_scrape_loop()
 
 tested_urls = set()
 if os.path.exists(TESTED_FILE):
@@ -292,91 +287,116 @@ async def scrape_loop():
     global scrape_count
     logger.info("Starting scrape loop")
     while True:
+        browser = None
+        p = None
         try:
-            async with aiohttp.ClientSession() as session, async_playwright() as p:
-                async with await p.chromium.launch() as browser:
-                    last_log = time.time()
-                    while True:
-                        try:
-                            for domain, settings in DOMAINS.items():
-                                base_url = settings["base_url"]
-                                length = settings.get("length", 6)
-                                rate_limit = settings.get("rate_limit", 1.0)
-                                charset = _apply_heuristics(domain, ALL_CHARS, length)
+            async with aiohttp.ClientSession() as session:
+                p = await async_playwright().start()
+                try:
+                    browser = await p.chromium.launch()
+                    logger.info("Browser launched")
+                except Exception as exc:
+                    logger.exception("Failed to launch browser: %s", exc)
+                    await p.stop()
+                    p = None
+                    raise
 
-                                while True:
-                                    ua = settings.get("user_agent")
-                                    headers = {"User-Agent": ua or random.choice(USER_AGENTS)}
-                                    code = generate_code(domain, length, charset)
-                                    url = f"{base_url}/{code}"
-                                    if url in tested_urls:
-                                        await asyncio.sleep(0)
-                                        continue
-                                    tested_urls.add(url)
-                                    with open(TESTED_FILE, "a", encoding="utf-8") as f:
-                                        f.write(url + "\n")
+                last_log = time.time()
+                while True:
+                    try:
+                        for domain, settings in DOMAINS.items():
+                            base_url = settings["base_url"]
+                            length = settings.get("length", 6)
+                            rate_limit = settings.get("rate_limit", 1.0)
+                            charset = _apply_heuristics(domain, ALL_CHARS, length)
 
-                                    logger.info("Checking %s", url)
+                            while True:
+                                headers = None
+                                code = generate_code(domain, length, charset)
+                                url = f"{base_url}/{code}"
+                                if url in tested_urls:
+                                    await asyncio.sleep(0)
+                                    continue
+                                tested_urls.add(url)
+                                with open(TESTED_FILE, "a", encoding="utf-8") as f:
+                                    f.write(url + "\n")
 
-                                    fetcher = SCRAPER_MAP.get(domain)
-                                    if not fetcher:
-                                        break
+                                logger.info("Checking %s", url)
 
-                                    try:
-                                        image_data = await asyncio.wait_for(
-                                            fetcher(browser, session, url, code, headers),
-                                            timeout=15,
-                                        )
-                                    except asyncio.TimeoutError:
-                                        logger.warning("Checked %s -> timeout (hard cap exceeded)", url)
-                                        image_data = None
-                                    except Exception as exc:
-                                        logger.warning("Checked %s -> error: %s", url, exc)
-                                        image_data = None
-
-                                    scrape_count += 1
-
-                                    if time.time() - last_log > 60:
-                                        logger.info("Watchdog: still alive, %d URLs tested", scrape_count)
-                                        last_log = time.time()
-
-                                    if scrape_count % SAVE_STATS_EVERY == 0:
-                                        logger.info("Heartbeat: processed %d URLs", scrape_count)
-                                        save_distributions()
-
-                                    if image_data is None:
-                                        _update_distribution(domain, code, valid=False)
-                                        await asyncio.sleep(rate_limit)
-                                        break
-
-                                    logger.info("Found image %s", url)
-                                    _update_distribution(domain, code, valid=True)
-                                    with open(VALID_CODES_FILE, "a", encoding="utf-8") as f:
-                                        f.write(code + "\n")
-
-                                    channel = client.get_channel(CHANNEL_ID)
-                                    if not channel:
-                                        logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
-                                    else:
-                                        try:
-                                            file = discord.File(io.BytesIO(image_data), filename="image.png")
-                                            embed = discord.Embed(url=url)
-                                            embed.set_image(url="attachment://image.png")
-                                            await channel.send(url, embed=embed, file=file)
-                                        except Exception as e:
-                                            logger.error("Failed to send message to Discord: %s", e)
+                                fetcher = SCRAPER_MAP.get(domain)
+                                if not fetcher:
                                     break
 
-                                await asyncio.sleep(rate_limit)
-                        except Exception:
-                            logger.exception("Error in scrape_loop iteration")
-                            await asyncio.sleep(5)
+                                try:
+                                    image_data = await asyncio.wait_for(
+                                        fetcher(browser, session, url, code, headers),
+                                        timeout=15,
+                                    )
+                                except asyncio.TimeoutError:
+                                    logger.warning("Checked %s -> timeout (hard cap exceeded)", url)
+                                    image_data = None
+                                except Exception as exc:
+                                    logger.warning("Checked %s -> error: %s", url, exc)
+                                    image_data = None
+
+                                scrape_count += 1
+
+                                if time.time() - last_log > 60:
+                                    logger.info("Watchdog: still alive, %d URLs tested", scrape_count)
+                                    last_log = time.time()
+
+                                if scrape_count % SAVE_STATS_EVERY == 0:
+                                    logger.info("Heartbeat: processed %d URLs", scrape_count)
+                                    save_distributions()
+
+                                if image_data is None:
+                                    _update_distribution(domain, code, valid=False)
+                                    await asyncio.sleep(rate_limit)
+                                    break
+
+                                logger.info("Found image %s", url)
+                                _update_distribution(domain, code, valid=True)
+                                with open(VALID_CODES_FILE, "a", encoding="utf-8") as f:
+                                    f.write(code + "\n")
+
+                                channel = client.get_channel(CHANNEL_ID)
+                                if not channel:
+                                    logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
+                                else:
+                                    try:
+                                        file = discord.File(io.BytesIO(image_data), filename="image.png")
+                                        embed = discord.Embed(url=url)
+                                        embed.set_image(url="attachment://image.png")
+                                        await channel.send(url, embed=embed, file=file)
+                                    except Exception as e:
+                                        logger.error("Failed to send message to Discord: %s", e)
+                                break
+
+                            await asyncio.sleep(rate_limit)
+                    except Exception:
+                        logger.exception("Error in scrape_loop iteration")
+                        await asyncio.sleep(5)
         except asyncio.CancelledError:
             logger.info("scrape_loop cancelled")
             break
         except Exception:
             logger.exception("scrape_loop error - restarting in 5s")
             await asyncio.sleep(5)
+        finally:
+            if browser:
+                try:
+                    await browser.close()
+                    logger.info("Browser closed")
+                except Exception as exc:
+                    logger.warning("Failed to close browser: %s", exc)
+                browser = None
+            if p:
+                try:
+                    await p.stop()
+                    logger.info("Playwright stopped")
+                except Exception as exc:
+                    logger.warning("Failed to stop Playwright: %s", exc)
+                p = None
     logger.warning("scrape_loop exited")
 
 def generate_code(domain: str, length: int, charset: str) -> str:
