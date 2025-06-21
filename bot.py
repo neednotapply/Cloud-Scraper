@@ -144,25 +144,29 @@ async def fetch_image(session: aiohttp.ClientSession, url: str, headers=None) ->
 # --- Additional helpers for prnt.sc scraping taken from neednotapply/Screenshot_Stealer-Matrix ---
 async def prntsc_get_image_url(browser: Browser, url: str) -> str | None:
     """Load a prnt.sc page with Playwright and extract the screenshot URL."""
-    page = await browser.new_page()
+    context = await browser.new_context()
     try:
-        await page.goto(url)
+        page = await context.new_page()
         try:
-            await page.wait_for_selector("#screenshot-image", timeout=5000)
-            image_url = await page.get_attribute("#screenshot-image", "src")
-        except Exception:
-            image_url = None
-        if image_url:
-            if image_url.startswith("//"):
-                image_url = "https:" + image_url
-            elif image_url.startswith("/"):
-                image_url = "https://prnt.sc" + image_url
-        return image_url
+            await page.goto(url)
+            try:
+                await page.wait_for_selector("#screenshot-image", timeout=5000)
+                image_url = await page.get_attribute("#screenshot-image", "src")
+            except Exception:
+                image_url = None
+            if image_url:
+                if image_url.startswith("//"):
+                    image_url = "https:" + image_url
+                elif image_url.startswith("/"):
+                    image_url = "https://prnt.sc" + image_url
+            return image_url
+        finally:
+            try:
+                await page.close()
+            except Exception as exc:
+                logger.warning("Failed to close prnt.sc page %s: %s", url, exc)
     finally:
-        try:
-            await page.close()
-        except Exception as exc:
-            logger.warning("Failed to close prnt.sc page %s: %s", url, exc)
+        await context.close()
 
 async def prntsc_validate_image_url(session: aiohttp.ClientSession, image_url: str) -> bool:
     """Return True if the given image URL returns HTTP 200."""
