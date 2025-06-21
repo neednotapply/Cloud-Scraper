@@ -38,6 +38,8 @@ python bot.py
 
 The bot will log attempts and post any discovered images to the configured Discord channel.
 
+Character frequency statistics are saved to `char_stats.json` and used to bias code generation toward more common letters for each domain.
+
 ### Imgur support
 
 Imgur pages and direct `i.imgur.com` links are handled automatically without any additional configuration. Both the page URL and direct image links such as `https://i.imgur.com/rMluBf1_d.webp` will be processed.

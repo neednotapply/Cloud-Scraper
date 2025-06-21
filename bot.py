@@ -15,8 +15,7 @@ import discord
 from playwright.async_api import async_playwright, Browser
 
 CONFIG_FILE = "config.json"
-TESTED_FILE = "tested_urls.txt"
-VALID_CODES_FILE = "valid_codes.txt"
+STATS_FILE = "char_stats.json"
 
 if not os.path.exists(CONFIG_FILE):
     raise RuntimeError(f"Missing {CONFIG_FILE}. See config.example.json")
@@ -37,6 +36,7 @@ DOMAINS = {
     "cl.ly": {"base_url": "https://cl.ly", "length": 6, "rate_limit": 1.0},
     "prnt.sc": {"base_url": "https://prnt.sc", "length": 6, "rate_limit": 1.0},
 }
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("bot")
@@ -79,9 +79,6 @@ async def on_resumed():
     await start_scrape_loop()
 
 tested_urls = set()
-if os.path.exists(TESTED_FILE):
-    with open(TESTED_FILE, "r", encoding="utf-8") as f:
-        tested_urls.update(line.strip() for line in f if line.strip())
 
 code_distributions: dict[str, dict[int, list[Counter]]] = defaultdict(lambda: defaultdict(list))
 invalid_distributions: dict[str, dict[int, list[Counter]]] = defaultdict(lambda: defaultdict(list))
@@ -115,20 +112,35 @@ def _apply_heuristics(domain: str, charset: str, length: int) -> str:
     logger.debug("Heuristics result for %s: %s", domain, result)
     return result
 
-def save_distributions():
-    with open("stats_valid.json", "w", encoding="utf-8") as f:
-        json.dump({d: {k: [dict(c) for c in v] for k, v in lv.items()} for d, lv in code_distributions.items()}, f, indent=2)
-    with open("stats_invalid.json", "w", encoding="utf-8") as f:
-        json.dump({d: {k: [dict(c) for c in v] for k, v in lv.items()} for d, lv in invalid_distributions.items()}, f, indent=2)
+def save_distributions() -> None:
+    data = {
+        "valid": {d: {str(k): [dict(c) for c in v] for k, v in lv.items()} for d, lv in code_distributions.items()},
+        "invalid": {d: {str(k): [dict(c) for c in v] for k, v in lv.items()} for d, lv in invalid_distributions.items()},
+    }
+    with open(STATS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
 
-def load_code_distributions() -> None:
-    if not os.path.exists(VALID_CODES_FILE):
+def load_distributions() -> None:
+    if not os.path.exists(STATS_FILE):
         return
-    with open(VALID_CODES_FILE, "r", encoding="utf-8") as f:
-        for line in f:
-            code = line.strip()
-            if code:
-                pass
+    with open(STATS_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    for domain, lengths in data.get("valid", {}).items():
+        for length_str, counters in lengths.items():
+            length = int(length_str)
+            while len(code_distributions[domain][length]) < len(counters):
+                code_distributions[domain][length].append(Counter())
+            for i, counter_dict in enumerate(counters):
+                code_distributions[domain][length][i].update(counter_dict)
+
+    for domain, lengths in data.get("invalid", {}).items():
+        for length_str, counters in lengths.items():
+            length = int(length_str)
+            while len(invalid_distributions[domain][length]) < len(counters):
+                invalid_distributions[domain][length].append(Counter())
+            for i, counter_dict in enumerate(counters):
+                invalid_distributions[domain][length][i].update(counter_dict)
 
 async def fetch_image(session: aiohttp.ClientSession, url: str, headers=None) -> bytes | None:
     try:
@@ -355,8 +367,6 @@ async def scrape_loop():
                                     await asyncio.sleep(0)
                                     continue
                                 tested_urls.add(url)
-                                with open(TESTED_FILE, "a", encoding="utf-8") as f:
-                                    f.write(url + "\n")
 
                                 logger.info("Checking %s", url)
 
@@ -399,8 +409,6 @@ async def scrape_loop():
 
                                 logger.info("Found image %s", url)
                                 _update_distribution(domain, code, valid=True)
-                                with open(VALID_CODES_FILE, "a", encoding="utf-8") as f:
-                                    f.write(code + "\n")
 
                                 channel = client.get_channel(CHANNEL_ID)
                                 if not channel:
@@ -456,6 +464,7 @@ def generate_code(domain: str, length: int, charset: str) -> str:
     return "".join(result)
 
 if __name__ == "__main__":
+    load_distributions()
     if not TOKEN or not CHANNEL_ID:
         raise RuntimeError("token and channel_id must be set in config.json")
     client.run(TOKEN)
