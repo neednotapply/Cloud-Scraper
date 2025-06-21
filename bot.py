@@ -100,12 +100,20 @@ def _update_distribution(domain: str, code: str, valid: bool = True) -> None:
         dist_map[domain][length][i][char] += 1
 
 def _apply_heuristics(domain: str, charset: str, length: int) -> str:
+    logger.debug(
+        "Applying heuristics: domain=%s length=%d initial_charset=%s",
+        domain,
+        length,
+        charset,
+    )
+    result = charset
     if domain == "prnt.sc":
         if length == 6:
-            return string.ascii_lowercase
+            result = string.ascii_lowercase
         elif length > 6:
-            return string.ascii_letters + string.digits
-    return charset
+            result = string.ascii_letters + string.digits
+    logger.debug("Heuristics result for %s: %s", domain, result)
+    return result
 
 def save_distributions():
     with open("stats_valid.json", "w", encoding="utf-8") as f:
@@ -308,11 +316,23 @@ async def scrape_loop():
                             base_url = settings["base_url"]
                             length = settings.get("length", 6)
                             rate_limit = settings.get("rate_limit", 1.0)
+                            logger.debug(
+                                "Domain loop start: %s length=%d rate_limit=%s",
+                                domain,
+                                length,
+                                rate_limit,
+                            )
                             charset = _apply_heuristics(domain, ALL_CHARS, length)
+                            logger.debug(
+                                "Using charset for %s: %s", domain, charset
+                            )
 
                             while True:
                                 headers = None
                                 code = generate_code(domain, length, charset)
+                                logger.debug(
+                                    "Generated code for %s: %s", domain, code
+                                )
                                 url = f"{base_url}/{code}"
                                 if url in tested_urls:
                                     await asyncio.sleep(0)
@@ -338,6 +358,12 @@ async def scrape_loop():
                                 except Exception as exc:
                                     logger.warning("Checked %s -> error: %s", url, exc)
                                     image_data = None
+                                else:
+                                    logger.debug(
+                                        "Fetcher completed for %s -> %s",
+                                        url,
+                                        "image" if image_data else "not found",
+                                    )
 
                                 scrape_count += 1
 
