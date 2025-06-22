@@ -458,16 +458,16 @@ async def scrape_loop():
     logger.warning("scrape_loop exited")
 
 def generate_code(domain: str, length: int, charset: str) -> str:
+    """Generate a code biased by collected statistics but still random."""
     dist = code_distributions.get(domain, {}).get(length)
-    if not dist:
-        return "".join(random.choice(charset) for _ in range(length))
     result = []
     for i in range(length):
-        if i < len(dist) and dist[i]:
-            chars, weights = zip(*dist[i].items())
-            result.append(random.choices(chars, weights=weights, k=1)[0])
-        else:
-            result.append(random.choice(charset))
+        weight_map = {ch: 1 for ch in charset}
+        if dist and i < len(dist):
+            for ch, w in dist[i].items():
+                weight_map[ch] = weight_map.get(ch, 1) + w
+        chars, weights = zip(*weight_map.items())
+        result.append(random.choices(chars, weights=weights, k=1)[0])
     return "".join(result)
 
 if __name__ == "__main__":
