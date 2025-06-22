@@ -117,12 +117,16 @@ def save_distributions() -> None:
         "valid": {d: {str(k): [dict(c) for c in v] for k, v in lv.items()} for d, lv in code_distributions.items()},
         "invalid": {d: {str(k): [dict(c) for c in v] for k, v in lv.items()} for d, lv in invalid_distributions.items()},
     }
+    logger.info("Saving statistics to %s", STATS_FILE)
     with open(STATS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+    logger.info("Saved statistics to %s", STATS_FILE)
 
 def load_distributions() -> None:
     if not os.path.exists(STATS_FILE):
+        logger.info("Statistics file %s does not exist", STATS_FILE)
         return
+    logger.info("Loading statistics from %s", STATS_FILE)
     with open(STATS_FILE, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -418,7 +422,10 @@ async def scrape_loop():
                                         file = discord.File(io.BytesIO(image_data), filename="image.png")
                                         embed = discord.Embed(url=url)
                                         embed.set_image(url="attachment://image.png")
-                                        await channel.send(url, embed=embed, file=file)
+                                        await asyncio.wait_for(
+                                            channel.send(url, embed=embed, file=file),
+                                            timeout=10,
+                                        )
                                     except Exception as e:
                                         logger.error("Failed to send message to Discord: %s", e)
                                 break
