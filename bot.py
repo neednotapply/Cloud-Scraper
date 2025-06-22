@@ -144,7 +144,7 @@ def load_distributions() -> None:
 
 async def fetch_image(session: aiohttp.ClientSession, url: str, headers=None) -> bytes | None:
     try:
-        async with session.get(url, headers=headers) as resp:
+        async with session.get(url, headers=headers, timeout=10) as resp:
             status = resp.status
             content_type = resp.headers.get("Content-Type", "")
             if status == 200 and content_type.startswith("image"):
@@ -436,14 +436,14 @@ async def scrape_loop():
         finally:
             if browser:
                 try:
-                    await browser.close()
+                    await asyncio.wait_for(browser.close(), timeout=10)
                     logger.info("Browser closed")
                 except Exception as exc:
                     logger.warning("Failed to close browser: %s", exc)
                 browser = None
             if p:
                 try:
-                    await p.stop()
+                    await asyncio.wait_for(p.stop(), timeout=10)
                     logger.info("Playwright stopped")
                 except Exception as exc:
                     logger.warning("Failed to stop Playwright: %s", exc)
