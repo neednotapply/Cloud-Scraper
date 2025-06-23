@@ -111,6 +111,7 @@ code_distributions: dict[str, dict[int, list[Counter]]] = defaultdict(lambda: de
 invalid_distributions: dict[str, dict[int, list[Counter]]] = defaultdict(lambda: defaultdict(list))
 
 SAVE_STATS_EVERY = 50
+SAVE_WEIGHTS_EVERY = 50
 scrape_count = 0
 
 ALL_CHARS = string.ascii_letters + string.digits
@@ -129,7 +130,7 @@ def update_domain_weight(domain: str, valid: bool) -> None:
         DOMAIN_WEIGHTS[domain] += WEIGHT_INCREASE
     else:
         DOMAIN_WEIGHTS[domain] = max(0.1, DOMAIN_WEIGHTS[domain] - WEIGHT_DECREASE)
-    save_domain_stats()
+
 
 def choose_domain() -> str:
     """Return a domain based on current weights."""
@@ -540,6 +541,9 @@ async def scrape_loop():
                         if scrape_count % SAVE_STATS_EVERY == 0:
                             logger.info("Heartbeat: processed %d URLs", scrape_count)
                             save_distributions()
+                        if scrape_count % SAVE_WEIGHTS_EVERY == 0:
+                            save_domain_stats()
+                            load_domain_stats()
 
                         if domain == "youtu.be":
                             if not result:
