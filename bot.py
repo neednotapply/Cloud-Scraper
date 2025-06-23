@@ -36,6 +36,13 @@ DOMAINS = {
     "cl.ly": {"base_url": "https://cl.ly", "length": 6, "rate_limit": 1.0},
     "prnt.sc": {"base_url": "https://prnt.sc", "length": 6, "rate_limit": 1.0},
     "youtu.be": {"base_url": "https://www.youtube.com/watch", "length": 11, "rate_limit": 1.0},
+    "vgy.me": {"base_url": "https://vgy.me", "length": 5, "rate_limit": 1.0},
+    "catbox.moe": {"base_url": "https://catbox.moe/c", "length": 6, "rate_limit": 1.0},
+    "tinyurl.com": {"base_url": "https://tinyurl.com", "length": 6, "rate_limit": 1.0},
+    "is.gd": {"base_url": "https://is.gd", "length": 6, "rate_limit": 1.0},
+    "bit.ly": {"base_url": "https://bit.ly", "length": 7, "rate_limit": 1.0},
+    "pastebin.com": {"base_url": "https://pastebin.com", "length": 8, "rate_limit": 1.0},
+    "gist.github.com": {"base_url": "https://gist.github.com", "length": 32, "rate_limit": 1.0},
 }
 
 
@@ -110,8 +117,14 @@ def _apply_heuristics(domain: str, charset: str, length: int) -> str:
             result = string.ascii_lowercase
         else:
             result = string.ascii_letters + string.digits
-    elif domain in {"ibb.co", "puu.sh", "imgur.com", "i.imgur.com", "gyazo.com", "cl.ly"}:
+    elif domain in {"ibb.co", "puu.sh", "imgur.com", "i.imgur.com", "gyazo.com", "cl.ly", "vgy.me", "tinyurl.com", "is.gd", "bit.ly"}:
         result = string.ascii_letters + string.digits
+    elif domain == "pastebin.com":
+        result = ''.join(ch for ch in (string.ascii_letters + string.digits) if ch not in "0OlI")
+    elif domain == "gist.github.com":
+        result = "0123456789abcdef"
+    elif domain == "catbox.moe":
+        result = string.ascii_lowercase + string.digits
     elif domain == "youtu.be":
         result = string.ascii_letters + string.digits + "-_"
     logger.debug("Heuristics result for %s: %s", domain, result)
@@ -348,6 +361,25 @@ async def check_youtube_video(
         logger.warning("Checked %s -> error: %s", url, exc)
     return False
 
+
+async def check_text_page(
+    browser: Browser,
+    session: aiohttp.ClientSession,
+    url: str,
+    code: str,
+    headers=None,
+) -> bool:
+    try:
+        async with session.get(url, headers=headers, timeout=10) as resp:
+            if resp.status == 200:
+                return True
+            logger.info("Checked %s -> HTTP %s", url, resp.status)
+    except asyncio.TimeoutError:
+        logger.warning("Checked %s -> not found (timeout)", url)
+    except Exception as exc:
+        logger.warning("Checked %s -> error: %s", url, exc)
+    return False
+
 SCRAPER_MAP = {
     "ibb.co": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "puu.sh": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
@@ -357,6 +389,13 @@ SCRAPER_MAP = {
     "cl.ly": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "prnt.sc": lambda browser, session, url, code, headers: fetch_prntsc_image(browser, session, url, headers=headers),
     "youtu.be": check_youtube_video,
+    "vgy.me": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
+    "catbox.moe": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
+    "tinyurl.com": lambda browser, session, url, code, headers: fetch_image(session, url, headers=headers),
+    "is.gd": lambda browser, session, url, code, headers: fetch_image(session, url, headers=headers),
+    "bit.ly": lambda browser, session, url, code, headers: fetch_image(session, url, headers=headers),
+    "pastebin.com": check_text_page,
+    "gist.github.com": check_text_page,
 }
 
 async def scrape_loop():
