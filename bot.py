@@ -611,6 +611,7 @@ async def scrape_loop():
                                 "Heartbeat: processed %d URLs", scrape_count
                             )
                             save_distributions()
+                            load_distributions()
                             save_domain_stats()
                             load_domain_stats()
                         elif scrape_count % SAVE_STATS_EVERY == 0:
@@ -618,6 +619,7 @@ async def scrape_loop():
                                 "Heartbeat: processed %d URLs", scrape_count
                             )
                             save_distributions()
+                            load_distributions()
 
                         if domain == "youtu.be":
                             if not result:
