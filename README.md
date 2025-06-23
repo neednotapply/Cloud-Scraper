@@ -19,6 +19,13 @@ The bot has a built-in list of supported services so no additional configuration
 | cl.ly | 6 |
 | prnt.sc | 6 |
 | youtu.be | 11 (checked via `https://www.youtube.com/watch?v=CODE`) |
+| vgy.me | 5 |
+| catbox.moe | 6 |
+| tinyurl.com | 6 |
+| is.gd | 6 |
+| bit.ly | 7 |
+| pastebin.com | 8 |
+| gist.github.com | 32 |
 
 
 ```
