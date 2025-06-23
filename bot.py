@@ -16,6 +16,7 @@ from playwright.async_api import async_playwright, Browser
 
 CONFIG_FILE = "config.json"
 STATS_FILE = "char_stats.json"
+DOMAIN_STATS_FILE = "domain_stats.json"
 
 if not os.path.exists(CONFIG_FILE):
     raise RuntimeError(f"Missing {CONFIG_FILE}. See config.example.json")
@@ -28,27 +29,36 @@ CHANNEL_ID = int(config.get("channel_id", 0))
 
 # Built-in domain configuration
 DOMAINS = {
-    "ibb.co": {"base_url": "https://ibb.co", "length": 8, "rate_limit": 1.0},
-    "puu.sh": {"base_url": "https://puu.sh", "length": 6, "rate_limit": 1.0},
-    "imgur.com": {"base_url": "https://imgur.com", "length": 7, "rate_limit": 1.0},
-    "i.imgur.com": {"base_url": "https://i.imgur.com", "length": 7, "rate_limit": 1.0},
-    "gyazo.com": {"base_url": "https://gyazo.com", "length": 36, "rate_limit": 1.0},
-    "cl.ly": {"base_url": "https://cl.ly", "length": 6, "rate_limit": 1.0},
-    "prnt.sc": {"base_url": "https://prnt.sc", "length": 6, "rate_limit": 1.0},
-    "youtu.be": {"base_url": "https://www.youtube.com/watch", "length": 11, "rate_limit": 1.0},
-    "vgy.me": {"base_url": "https://vgy.me", "length": 5, "rate_limit": 1.0},
+    "ibb.co": {"base_url": "https://ibb.co", "length": 8, "rate_limit": 1.0, "weight": 1.0},
+    "puu.sh": {"base_url": "https://puu.sh", "length": 6, "rate_limit": 1.0, "weight": 1.0},
+    "imgur.com": {"base_url": "https://imgur.com", "length": 7, "rate_limit": 1.0, "weight": 1.0},
+    "i.imgur.com": {"base_url": "https://i.imgur.com", "length": 7, "rate_limit": 1.0, "weight": 1.0},
+    "gyazo.com": {"base_url": "https://gyazo.com", "length": 36, "rate_limit": 1.0, "weight": 1.0},
+    "cl.ly": {"base_url": "https://cl.ly", "length": 6, "rate_limit": 1.0, "weight": 1.0},
+    "prnt.sc": {"base_url": "https://prnt.sc", "length": 6, "rate_limit": 1.0, "weight": 1.0},
+    "youtu.be": {"base_url": "https://www.youtube.com/watch", "length": 11, "rate_limit": 1.0, "weight": 1.0},
+    "vgy.me": {"base_url": "https://vgy.me", "length": 5, "rate_limit": 1.0, "weight": 1.0},
     "catbox.moe": {
         "base_url": "https://files.catbox.moe",
         "length": 6,
         "rate_limit": 1.0,
-        "extensions": ["jpg", "jpeg", "png", "gif", "webp"]
+        "extensions": ["jpg", "jpeg", "png", "gif", "webp"],
+        "weight": 1.0,
     },
-    "tinyurl.com": {"base_url": "https://tinyurl.com", "length": 6, "rate_limit": 1.0},
-    "is.gd": {"base_url": "https://is.gd", "length": 6, "rate_limit": 1.0},
-    "bit.ly": {"base_url": "https://bit.ly", "length": 7, "rate_limit": 1.0},
-    "pastebin.com": {"base_url": "https://pastebin.com", "length": 8, "rate_limit": 1.0},
-    "gist.github.com": {"base_url": "https://gist.github.com", "length": 32, "rate_limit": 1.0},
+    "tinyurl.com": {"base_url": "https://tinyurl.com", "length": 6, "rate_limit": 1.0, "weight": 1.0},
+    "is.gd": {"base_url": "https://is.gd", "length": 6, "rate_limit": 1.0, "weight": 1.0},
+    "bit.ly": {"base_url": "https://bit.ly", "length": 7, "rate_limit": 1.0, "weight": 1.0},
+    "pastebin.com": {"base_url": "https://pastebin.com", "length": 8, "rate_limit": 1.0, "weight": 1.0},
+    "gist.github.com": {"base_url": "https://gist.github.com", "length": 32, "rate_limit": 1.0, "weight": 1.0},
 }
+
+# Weight configuration for each domain used to bias selection.
+# These values are adjusted at runtime based on valid/invalid results.
+DOMAIN_WEIGHTS = {domain: cfg.get("weight", 1.0) for domain, cfg in DOMAINS.items()}
+WEIGHT_INCREASE = 0.1
+WEIGHT_DECREASE = 0.1
+
+# Domains that host text rather than images. For these we simply verify that a
 
 # Domains that host text rather than images. For these we simply verify that a
 # page exists and send the link without attempting to embed an image.
@@ -113,6 +123,20 @@ def _update_distribution(domain: str, code: str, valid: bool = True) -> None:
     for i, char in enumerate(code):
         dist_map[domain][length][i][char] += 1
 
+def update_domain_weight(domain: str, valid: bool) -> None:
+    """Adjust domain weight based on whether a link was valid."""
+    if valid:
+        DOMAIN_WEIGHTS[domain] += WEIGHT_INCREASE
+    else:
+        DOMAIN_WEIGHTS[domain] = max(0.1, DOMAIN_WEIGHTS[domain] - WEIGHT_DECREASE)
+    save_domain_stats()
+
+def choose_domain() -> str:
+    """Return a domain based on current weights."""
+    domains = list(DOMAIN_WEIGHTS.keys())
+    weights = [DOMAIN_WEIGHTS[d] for d in domains]
+    return random.choices(domains, weights=weights, k=1)[0]
+
 def _apply_heuristics(domain: str, charset: str, length: int) -> str:
     logger.debug(
         "Applying heuristics: domain=%s length=%d initial_charset=%s",
@@ -149,6 +173,13 @@ def save_distributions() -> None:
         json.dump(data, f, indent=2)
     logger.info("Saved statistics to %s", STATS_FILE)
 
+def save_domain_stats() -> None:
+    """Persist current domain weights to DOMAIN_STATS_FILE."""
+    logger.info("Saving domain weights to %s", DOMAIN_STATS_FILE)
+    with open(DOMAIN_STATS_FILE, "w", encoding="utf-8") as f:
+        json.dump(DOMAIN_WEIGHTS, f, indent=2)
+    logger.info("Saved domain weights to %s", DOMAIN_STATS_FILE)
+
 def load_distributions() -> None:
     if not os.path.exists(STATS_FILE):
         logger.info("Statistics file %s does not exist", STATS_FILE)
@@ -172,6 +203,18 @@ def load_distributions() -> None:
                 invalid_distributions[domain][length].append(Counter())
             for i, counter_dict in enumerate(counters):
                 invalid_distributions[domain][length][i].update(counter_dict)
+
+def load_domain_stats() -> None:
+    """Load domain weights from DOMAIN_STATS_FILE if it exists."""
+    if not os.path.exists(DOMAIN_STATS_FILE):
+        logger.info("Domain weights file %s does not exist", DOMAIN_STATS_FILE)
+        return
+    logger.info("Loading domain weights from %s", DOMAIN_STATS_FILE)
+    with open(DOMAIN_STATS_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    for domain, weight in data.items():
+        if domain in DOMAIN_WEIGHTS:
+            DOMAIN_WEIGHTS[domain] = float(weight)
 
 async def fetch_image(session: aiohttp.ClientSession, url: str, headers=None) -> bytes | None:
     try:
@@ -435,139 +478,137 @@ async def scrape_loop():
                 last_log = time.time()
                 while True:
                     try:
-                        for domain, settings in DOMAINS.items():
-                            base_url = settings["base_url"]
-                            length = settings.get("length", 6)
-                            rate_limit = settings.get("rate_limit", 1.0)
-                            logger.debug(
-                                "Domain loop start: %s length=%d rate_limit=%s",
-                                domain,
-                                length,
-                                rate_limit,
-                            )
-                            charset = _apply_heuristics(domain, ALL_CHARS, length)
-                            logger.debug(
-                                "Using charset for %s: %s", domain, charset
-                            )
+                        domain = choose_domain()
+                        settings = DOMAINS[domain]
+                        base_url = settings["base_url"]
+                        length = settings.get("length", 6)
+                        rate_limit = settings.get("rate_limit", 1.0)
+                        logger.debug(
+                            "Domain selected: %s length=%d rate_limit=%s",
+                            domain,
+                            length,
+                            rate_limit,
+                        )
+                        charset = _apply_heuristics(domain, ALL_CHARS, length)
 
-                            while True:
-                                headers = None
-                                code = generate_code(domain, length, charset)
-                                logger.debug(
-                                    "Generated code for %s: %s", domain, code
-                                )
-                                if domain == "youtu.be":
-                                    url = f"{base_url}?v={code}"
-                                else:
-                                    url = f"{base_url}/{code}"
-                                    if domain == "catbox.moe":
-                                        ext = random.choice(settings.get("extensions", ["png"]))
-                                        url = f"{url}.{ext}"
-                                if url in tested_urls:
-                                    await asyncio.sleep(0)
-                                    continue
-                                tested_urls.add(url)
+                        headers = None
+                        code = generate_code(domain, length, charset)
+                        logger.debug("Generated code for %s: %s", domain, code)
+                        if domain == "youtu.be":
+                            url = f"{base_url}?v={code}"
+                        else:
+                            url = f"{base_url}/{code}"
+                            if domain == "catbox.moe":
+                                ext = random.choice(settings.get("extensions", ["png"]))
+                                url = f"{url}.{ext}"
+                        if url in tested_urls:
+                            await asyncio.sleep(0)
+                            continue
+                        tested_urls.add(url)
 
-                                logger.info("Checking %s", url)
+                        logger.info("Checking %s", url)
 
-                                fetcher = SCRAPER_MAP.get(domain)
-                                if not fetcher:
-                                    break
-
-                                try:
-                                    result = await asyncio.wait_for(
-                                        fetcher(browser, session, url, code, headers),
-                                        timeout=15,
-                                    )
-                                except asyncio.TimeoutError:
-                                    logger.warning("Checked %s -> timeout (hard cap exceeded)", url)
-                                    result = None
-                                except Exception as exc:
-                                    logger.warning("Checked %s -> error: %s", url, exc)
-                                    result = None
-                                else:
-                                    logger.debug(
-                                        "Fetcher completed for %s -> %s",
-                                        url,
-                                        "success" if result else "not found",
-                                    )
-
-                                scrape_count += 1
-
-                                if time.time() - last_log > 60:
-                                    logger.info("Watchdog: still alive, %d URLs tested", scrape_count)
-                                    last_log = time.time()
-
-                                if scrape_count % SAVE_STATS_EVERY == 0:
-                                    logger.info("Heartbeat: processed %d URLs", scrape_count)
-                                    save_distributions()
-
-                                if domain == "youtu.be":
-                                    if not result:
-                                        _update_distribution(domain, code, valid=False)
-                                        await asyncio.sleep(rate_limit)
-                                        break
-                                    logger.info("Found video %s", url)
-                                    _update_distribution(domain, code, valid=True)
-                                    channel = client.get_channel(CHANNEL_ID)
-                                    if not channel:
-                                        logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
-                                    else:
-                                        try:
-                                            await asyncio.wait_for(
-                                                channel.send(url),
-                                                timeout=10,
-                                            )
-                                        except Exception as e:
-                                            logger.error("Failed to send message to Discord: %s", e)
-                                    break
-                                elif domain in TEXT_DOMAINS:
-                                    if not result:
-                                        _update_distribution(domain, code, valid=False)
-                                        await asyncio.sleep(rate_limit)
-                                        break
-                                    logger.info("Found page %s", url)
-                                    _update_distribution(domain, code, valid=True)
-                                    channel = client.get_channel(CHANNEL_ID)
-                                    if not channel:
-                                        logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
-                                    else:
-                                        try:
-                                            await asyncio.wait_for(
-                                                channel.send(url),
-                                                timeout=10,
-                                            )
-                                        except Exception as e:
-                                            logger.error("Failed to send message to Discord: %s", e)
-                                    break
-                                else:
-                                    image_data = result
-                                    if image_data is None:
-                                        _update_distribution(domain, code, valid=False)
-                                        await asyncio.sleep(rate_limit)
-                                        break
-
-                                    logger.info("Found image %s", url)
-                                    _update_distribution(domain, code, valid=True)
-
-                                    channel = client.get_channel(CHANNEL_ID)
-                                    if not channel:
-                                        logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
-                                    else:
-                                        try:
-                                            file = discord.File(io.BytesIO(image_data), filename="image.png")
-                                            embed = discord.Embed(url=url)
-                                            embed.set_image(url="attachment://image.png")
-                                            await asyncio.wait_for(
-                                                channel.send(url, embed=embed, file=file),
-                                                timeout=10,
-                                            )
-                                        except Exception as e:
-                                            logger.error("Failed to send message to Discord: %s", e)
-
-                                break
-
+                        fetcher = SCRAPER_MAP.get(domain)
+                        if not fetcher:
                             await asyncio.sleep(rate_limit)
+                            continue
+
+                        try:
+                            result = await asyncio.wait_for(
+                                fetcher(browser, session, url, code, headers),
+                                timeout=15,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning("Checked %s -> timeout (hard cap exceeded)", url)
+                            result = None
+                        except Exception as exc:
+                            logger.warning("Checked %s -> error: %s", url, exc)
+                            result = None
+                        else:
+                            logger.debug(
+                                "Fetcher completed for %s -> %s",
+                                url,
+                                "success" if result else "not found",
+                            )
+
+                        scrape_count += 1
+
+                        if time.time() - last_log > 60:
+                            logger.info("Watchdog: still alive, %d URLs tested", scrape_count)
+                            last_log = time.time()
+
+                        if scrape_count % SAVE_STATS_EVERY == 0:
+                            logger.info("Heartbeat: processed %d URLs", scrape_count)
+                            save_distributions()
+
+                        if domain == "youtu.be":
+                            if not result:
+                                _update_distribution(domain, code, valid=False)
+                                update_domain_weight(domain, False)
+                                await asyncio.sleep(rate_limit)
+                                continue
+                            logger.info("Found video %s", url)
+                            _update_distribution(domain, code, valid=True)
+                            update_domain_weight(domain, True)
+                            channel = client.get_channel(CHANNEL_ID)
+                            if not channel:
+                                logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
+                            else:
+                                try:
+                                    await asyncio.wait_for(
+                                        channel.send(url),
+                                        timeout=10,
+                                    )
+                                except Exception as e:
+                                    logger.error("Failed to send message to Discord: %s", e)
+                        elif domain in TEXT_DOMAINS:
+                            if not result:
+                                _update_distribution(domain, code, valid=False)
+                                update_domain_weight(domain, False)
+                                await asyncio.sleep(rate_limit)
+                                continue
+                            logger.info("Found page %s", url)
+                            _update_distribution(domain, code, valid=True)
+                            update_domain_weight(domain, True)
+                            channel = client.get_channel(CHANNEL_ID)
+                            if not channel:
+                                logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
+                            else:
+                                try:
+                                    await asyncio.wait_for(
+                                        channel.send(url),
+                                        timeout=10,
+                                    )
+                                except Exception as e:
+                                    logger.error("Failed to send message to Discord: %s", e)
+                        else:
+                            image_data = result
+                            if image_data is None:
+                                _update_distribution(domain, code, valid=False)
+                                update_domain_weight(domain, False)
+                                await asyncio.sleep(rate_limit)
+                                continue
+
+                            logger.info("Found image %s", url)
+                            _update_distribution(domain, code, valid=True)
+                            update_domain_weight(domain, True)
+
+                            channel = client.get_channel(CHANNEL_ID)
+                            if not channel:
+                                logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
+                            else:
+                                try:
+                                    file = discord.File(io.BytesIO(image_data), filename="image.png")
+                                    embed = discord.Embed(url=url)
+                                    embed.set_image(url="attachment://image.png")
+                                    await asyncio.wait_for(
+                                        channel.send(url, embed=embed, file=file),
+                                        timeout=10,
+                                    )
+                                except Exception as e:
+                                    logger.error("Failed to send message to Discord: %s", e)
+
+                        await asyncio.sleep(rate_limit)
                     except Exception:
                         logger.exception("Error in scrape_loop iteration")
                         await asyncio.sleep(5)
@@ -609,6 +650,7 @@ def generate_code(domain: str, length: int, charset: str) -> str:
 
 if __name__ == "__main__":
     load_distributions()
+    load_domain_stats()
     if not TOKEN or not CHANNEL_ID:
         raise RuntimeError("token and channel_id must be set in config.json")
     client.run(TOKEN)
