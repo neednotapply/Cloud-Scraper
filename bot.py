@@ -319,14 +319,15 @@ async def fetch_imgur_image(session: aiohttp.ClientSession, url: str, headers=No
         logger.warning("Checked %s -> error: %s", url, exc)
     return None
 
+
 async def check_youtube_video(
+
     browser: Browser,
     session: aiohttp.ClientSession,
     url: str,
     code: str,
     headers=None,
-) -> bool:
-    """Return True if the YouTube watch page exists."""
+
     try:
         async with session.get(url, headers=headers, timeout=10) as resp:
             if resp.status == 200:
@@ -477,6 +478,7 @@ async def scrape_loop():
                                             )
                                         except Exception as e:
                                             logger.error("Failed to send message to Discord: %s", e)
+
                                 break
 
                             await asyncio.sleep(rate_limit)
