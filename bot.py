@@ -321,13 +321,13 @@ async def fetch_imgur_image(session: aiohttp.ClientSession, url: str, headers=No
 
 
 async def check_youtube_video(
-
     browser: Browser,
     session: aiohttp.ClientSession,
     url: str,
     code: str,
     headers=None,
-
+) -> bool:
+    """Check if a YouTube video exists."""
     try:
         async with session.get(url, headers=headers, timeout=10) as resp:
             if resp.status == 200:
