@@ -328,7 +328,6 @@ async def check_youtube_video(
     headers=None,
 ) -> bool:
 
- main
     try:
         async with session.get(url, headers=headers, timeout=10) as resp:
             if resp.status == 200:
