@@ -35,6 +35,7 @@ DOMAINS = {
     "gyazo.com": {"base_url": "https://gyazo.com", "length": 36, "rate_limit": 1.0},
     "cl.ly": {"base_url": "https://cl.ly", "length": 6, "rate_limit": 1.0},
     "prnt.sc": {"base_url": "https://prnt.sc", "length": 6, "rate_limit": 1.0},
+    "youtu.be": {"base_url": "https://youtu.be", "length": 11, "rate_limit": 1.0},
 }
 
 
@@ -107,8 +108,12 @@ def _apply_heuristics(domain: str, charset: str, length: int) -> str:
     if domain == "prnt.sc":
         if length == 6:
             result = string.ascii_lowercase
-        elif length > 6:
+        else:
             result = string.ascii_letters + string.digits
+    elif domain in {"ibb.co", "puu.sh", "imgur.com", "i.imgur.com", "gyazo.com", "cl.ly"}:
+        result = string.ascii_letters + string.digits
+    elif domain == "youtu.be":
+        result = string.ascii_letters + string.digits + "-_"
     logger.debug("Heuristics result for %s: %s", domain, result)
     return result
 
@@ -314,6 +319,17 @@ async def fetch_imgur_image(session: aiohttp.ClientSession, url: str, headers=No
         logger.warning("Checked %s -> error: %s", url, exc)
     return None
 
+async def fetch_youtube_image(
+    browser: Browser,
+    session: aiohttp.ClientSession,
+    url: str,
+    code: str,
+    headers=None,
+) -> bytes | None:
+    """Fetch the YouTube thumbnail for the given video ID."""
+    image_url = f"https://i.ytimg.com/vi/{code}/hqdefault.jpg"
+    return await fetch_image(session, image_url, headers=headers)
+
 SCRAPER_MAP = {
     "ibb.co": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "puu.sh": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
@@ -322,6 +338,7 @@ SCRAPER_MAP = {
     "gyazo.com": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "cl.ly": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "prnt.sc": lambda browser, session, url, code, headers: fetch_prntsc_image(browser, session, url, headers=headers),
+    "youtu.be": fetch_youtube_image,
 }
 
 async def scrape_loop():
