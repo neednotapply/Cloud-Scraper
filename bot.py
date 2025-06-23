@@ -57,7 +57,7 @@ DOMAINS = {
 # These values are adjusted at runtime based on valid/invalid results.
 DOMAIN_WEIGHTS = {domain: cfg.get("weight", 1.0) for domain, cfg in DOMAINS.items()}
 WEIGHT_INCREASE = 0.1
-WEIGHT_DECREASE = 0.1
+WEIGHT_DECREASE = 0.025
 
 # Domains that host text rather than images. For these we simply verify that a
 # page exists and send the link without attempting to embed an image.
@@ -155,7 +155,7 @@ def update_domain_weight(domain: str, valid: bool) -> None:
     if valid:
         DOMAIN_WEIGHTS[domain] += WEIGHT_INCREASE
     else:
-        DOMAIN_WEIGHTS[domain] = max(0.1, DOMAIN_WEIGHTS[domain] - WEIGHT_DECREASE)
+        DOMAIN_WEIGHTS[domain] = max(1.0, DOMAIN_WEIGHTS[domain] - WEIGHT_DECREASE)
 
 
 def choose_domain() -> str:
@@ -256,7 +256,7 @@ def load_domain_stats() -> None:
         return
     for domain, weight in data.items():
         if domain in DOMAIN_WEIGHTS:
-            DOMAIN_WEIGHTS[domain] = float(weight)
+            DOMAIN_WEIGHTS[domain] = max(1.0, float(weight))
 
 async def fetch_image(session: aiohttp.ClientSession, url: str, headers=None) -> bytes | None:
     try:

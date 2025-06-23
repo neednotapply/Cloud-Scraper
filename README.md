@@ -49,7 +49,7 @@ The bot will log attempts and post any discovered images to the configured Disco
 
 Character frequency statistics are saved to `char_stats.json` and used to bias code generation toward more common letters for each domain.
 
-Each domain also maintains a simple weight that influences how often it is selected for testing. Domains start with a weight of `1.0` and the value is adjusted based on whether links are found to be valid or invalid during scraping. The current weights are stored in `domain_stats.json` so the bot can learn over time which services are more reliable.
+Each domain also maintains a simple weight that influences how often it is selected for testing. Domains start at `1.0` and increase by `0.1` whenever a link is valid. Invalid links decrease the weight by `0.025`, but a domain's weight will never drop below `1.0`. The current weights are stored in `domain_stats.json` so the bot can learn over time which services are more reliable.
 
 If either of these files is missing or contains invalid JSON, the bot will reset
 them to default empty structures on startup.
