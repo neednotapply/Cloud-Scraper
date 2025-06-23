@@ -37,13 +37,22 @@ DOMAINS = {
     "prnt.sc": {"base_url": "https://prnt.sc", "length": 6, "rate_limit": 1.0},
     "youtu.be": {"base_url": "https://www.youtube.com/watch", "length": 11, "rate_limit": 1.0},
     "vgy.me": {"base_url": "https://vgy.me", "length": 5, "rate_limit": 1.0},
-    "catbox.moe": {"base_url": "https://catbox.moe/c", "length": 6, "rate_limit": 1.0},
+    "catbox.moe": {
+        "base_url": "https://files.catbox.moe",
+        "length": 6,
+        "rate_limit": 1.0,
+        "extensions": ["jpg", "jpeg", "png", "gif", "webp"]
+    },
     "tinyurl.com": {"base_url": "https://tinyurl.com", "length": 6, "rate_limit": 1.0},
     "is.gd": {"base_url": "https://is.gd", "length": 6, "rate_limit": 1.0},
     "bit.ly": {"base_url": "https://bit.ly", "length": 7, "rate_limit": 1.0},
     "pastebin.com": {"base_url": "https://pastebin.com", "length": 8, "rate_limit": 1.0},
     "gist.github.com": {"base_url": "https://gist.github.com", "length": 32, "rate_limit": 1.0},
 }
+
+# Domains that host text rather than images. For these we simply verify that a
+# page exists and send the link without attempting to embed an image.
+TEXT_DOMAINS = {"pastebin.com", "gist.github.com"}
 
 
 logging.basicConfig(level=logging.INFO)
@@ -371,7 +380,14 @@ async def check_text_page(
 ) -> bool:
     try:
         async with session.get(url, headers=headers, timeout=10) as resp:
+            text = await resp.text(errors="ignore")
             if resp.status == 200:
+                if (
+                    "This page is no longer available" in text
+                    or "This is not the web page you are looking for" in text
+                ):
+                    logger.info("Checked %s -> not found (404 text)", url)
+                    return False
                 return True
             logger.info("Checked %s -> HTTP %s", url, resp.status)
     except asyncio.TimeoutError:
@@ -390,7 +406,7 @@ SCRAPER_MAP = {
     "prnt.sc": lambda browser, session, url, code, headers: fetch_prntsc_image(browser, session, url, headers=headers),
     "youtu.be": check_youtube_video,
     "vgy.me": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
-    "catbox.moe": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
+    "catbox.moe": lambda browser, session, url, code, headers: fetch_image(session, url, headers=headers),
     "tinyurl.com": lambda browser, session, url, code, headers: fetch_image(session, url, headers=headers),
     "is.gd": lambda browser, session, url, code, headers: fetch_image(session, url, headers=headers),
     "bit.ly": lambda browser, session, url, code, headers: fetch_image(session, url, headers=headers),
@@ -444,6 +460,9 @@ async def scrape_loop():
                                     url = f"{base_url}?v={code}"
                                 else:
                                     url = f"{base_url}/{code}"
+                                    if domain == "catbox.moe":
+                                        ext = random.choice(settings.get("extensions", ["png"]))
+                                        url = f"{url}.{ext}"
                                 if url in tested_urls:
                                     await asyncio.sleep(0)
                                     continue
@@ -489,6 +508,25 @@ async def scrape_loop():
                                         await asyncio.sleep(rate_limit)
                                         break
                                     logger.info("Found video %s", url)
+                                    _update_distribution(domain, code, valid=True)
+                                    channel = client.get_channel(CHANNEL_ID)
+                                    if not channel:
+                                        logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
+                                    else:
+                                        try:
+                                            await asyncio.wait_for(
+                                                channel.send(url),
+                                                timeout=10,
+                                            )
+                                        except Exception as e:
+                                            logger.error("Failed to send message to Discord: %s", e)
+                                    break
+                                elif domain in TEXT_DOMAINS:
+                                    if not result:
+                                        _update_distribution(domain, code, valid=False)
+                                        await asyncio.sleep(rate_limit)
+                                        break
+                                    logger.info("Found page %s", url)
                                     _update_distribution(domain, code, valid=True)
                                     channel = client.get_channel(CHANNEL_ID)
                                     if not channel:
