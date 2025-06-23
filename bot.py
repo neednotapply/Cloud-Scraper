@@ -183,11 +183,17 @@ def save_domain_stats() -> None:
 
 def load_distributions() -> None:
     if not os.path.exists(STATS_FILE):
-        logger.info("Statistics file %s does not exist", STATS_FILE)
+        logger.info("Statistics file %s does not exist, creating defaults", STATS_FILE)
+        save_distributions()
         return
     logger.info("Loading statistics from %s", STATS_FILE)
-    with open(STATS_FILE, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(STATS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError:
+        logger.warning("Statistics file %s is invalid, resetting", STATS_FILE)
+        save_distributions()
+        return
 
     for domain, lengths in data.get("valid", {}).items():
         for length_str, counters in lengths.items():
@@ -208,11 +214,20 @@ def load_distributions() -> None:
 def load_domain_stats() -> None:
     """Load domain weights from DOMAIN_STATS_FILE if it exists."""
     if not os.path.exists(DOMAIN_STATS_FILE):
-        logger.info("Domain weights file %s does not exist", DOMAIN_STATS_FILE)
+        logger.info(
+            "Domain weights file %s does not exist, creating defaults",
+            DOMAIN_STATS_FILE,
+        )
+        save_domain_stats()
         return
     logger.info("Loading domain weights from %s", DOMAIN_STATS_FILE)
-    with open(DOMAIN_STATS_FILE, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(DOMAIN_STATS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError:
+        logger.warning("Domain weights file %s is invalid, resetting", DOMAIN_STATS_FILE)
+        save_domain_stats()
+        return
     for domain, weight in data.items():
         if domain in DOMAIN_WEIGHTS:
             DOMAIN_WEIGHTS[domain] = float(weight)
