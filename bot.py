@@ -35,7 +35,7 @@ DOMAINS = {
     "gyazo.com": {"base_url": "https://gyazo.com", "length": 36, "rate_limit": 1.0},
     "cl.ly": {"base_url": "https://cl.ly", "length": 6, "rate_limit": 1.0},
     "prnt.sc": {"base_url": "https://prnt.sc", "length": 6, "rate_limit": 1.0},
-    "youtu.be": {"base_url": "https://youtu.be", "length": 11, "rate_limit": 1.0},
+    "youtu.be": {"base_url": "https://www.youtube.com/watch", "length": 11, "rate_limit": 1.0},
 }
 
 
@@ -319,16 +319,25 @@ async def fetch_imgur_image(session: aiohttp.ClientSession, url: str, headers=No
         logger.warning("Checked %s -> error: %s", url, exc)
     return None
 
-async def fetch_youtube_image(
+
+async def check_youtube_video(
+
     browser: Browser,
     session: aiohttp.ClientSession,
     url: str,
     code: str,
     headers=None,
-) -> bytes | None:
-    """Fetch the YouTube thumbnail for the given video ID."""
-    image_url = f"https://i.ytimg.com/vi/{code}/hqdefault.jpg"
-    return await fetch_image(session, image_url, headers=headers)
+
+    try:
+        async with session.get(url, headers=headers, timeout=10) as resp:
+            if resp.status == 200:
+                return True
+            logger.info("Checked %s -> HTTP %s", url, resp.status)
+    except asyncio.TimeoutError:
+        logger.warning("Checked %s -> not found (timeout)", url)
+    except Exception as exc:
+        logger.warning("Checked %s -> error: %s", url, exc)
+    return False
 
 SCRAPER_MAP = {
     "ibb.co": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
@@ -338,7 +347,7 @@ SCRAPER_MAP = {
     "gyazo.com": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "cl.ly": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "prnt.sc": lambda browser, session, url, code, headers: fetch_prntsc_image(browser, session, url, headers=headers),
-    "youtu.be": fetch_youtube_image,
+    "youtu.be": check_youtube_video,
 }
 
 async def scrape_loop():
@@ -383,7 +392,10 @@ async def scrape_loop():
                                 logger.debug(
                                     "Generated code for %s: %s", domain, code
                                 )
-                                url = f"{base_url}/{code}"
+                                if domain == "youtu.be":
+                                    url = f"{base_url}?v={code}"
+                                else:
+                                    url = f"{base_url}/{code}"
                                 if url in tested_urls:
                                     await asyncio.sleep(0)
                                     continue
@@ -396,21 +408,21 @@ async def scrape_loop():
                                     break
 
                                 try:
-                                    image_data = await asyncio.wait_for(
+                                    result = await asyncio.wait_for(
                                         fetcher(browser, session, url, code, headers),
                                         timeout=15,
                                     )
                                 except asyncio.TimeoutError:
                                     logger.warning("Checked %s -> timeout (hard cap exceeded)", url)
-                                    image_data = None
+                                    result = None
                                 except Exception as exc:
                                     logger.warning("Checked %s -> error: %s", url, exc)
-                                    image_data = None
+                                    result = None
                                 else:
                                     logger.debug(
                                         "Fetcher completed for %s -> %s",
                                         url,
-                                        "image" if image_data else "not found",
+                                        "success" if result else "not found",
                                     )
 
                                 scrape_count += 1
@@ -423,28 +435,50 @@ async def scrape_loop():
                                     logger.info("Heartbeat: processed %d URLs", scrape_count)
                                     save_distributions()
 
-                                if image_data is None:
-                                    _update_distribution(domain, code, valid=False)
-                                    await asyncio.sleep(rate_limit)
+                                if domain == "youtu.be":
+                                    if not result:
+                                        _update_distribution(domain, code, valid=False)
+                                        await asyncio.sleep(rate_limit)
+                                        break
+                                    logger.info("Found video %s", url)
+                                    _update_distribution(domain, code, valid=True)
+                                    channel = client.get_channel(CHANNEL_ID)
+                                    if not channel:
+                                        logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
+                                    else:
+                                        try:
+                                            await asyncio.wait_for(
+                                                channel.send(url),
+                                                timeout=10,
+                                            )
+                                        except Exception as e:
+                                            logger.error("Failed to send message to Discord: %s", e)
                                     break
-
-                                logger.info("Found image %s", url)
-                                _update_distribution(domain, code, valid=True)
-
-                                channel = client.get_channel(CHANNEL_ID)
-                                if not channel:
-                                    logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
                                 else:
-                                    try:
-                                        file = discord.File(io.BytesIO(image_data), filename="image.png")
-                                        embed = discord.Embed(url=url)
-                                        embed.set_image(url="attachment://image.png")
-                                        await asyncio.wait_for(
-                                            channel.send(url, embed=embed, file=file),
-                                            timeout=10,
-                                        )
-                                    except Exception as e:
-                                        logger.error("Failed to send message to Discord: %s", e)
+                                    image_data = result
+                                    if image_data is None:
+                                        _update_distribution(domain, code, valid=False)
+                                        await asyncio.sleep(rate_limit)
+                                        break
+
+                                    logger.info("Found image %s", url)
+                                    _update_distribution(domain, code, valid=True)
+
+                                    channel = client.get_channel(CHANNEL_ID)
+                                    if not channel:
+                                        logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
+                                    else:
+                                        try:
+                                            file = discord.File(io.BytesIO(image_data), filename="image.png")
+                                            embed = discord.Embed(url=url)
+                                            embed.set_image(url="attachment://image.png")
+                                            await asyncio.wait_for(
+                                                channel.send(url, embed=embed, file=file),
+                                                timeout=10,
+                                            )
+                                        except Exception as e:
+                                            logger.error("Failed to send message to Discord: %s", e)
+
                                 break
 
                             await asyncio.sleep(rate_limit)
