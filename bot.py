@@ -35,6 +35,7 @@ DOMAINS = {
     "gyazo.com": {"base_url": "https://gyazo.com", "length": 36, "rate_limit": 1.0},
     "cl.ly": {"base_url": "https://cl.ly", "length": 6, "rate_limit": 1.0},
     "prnt.sc": {"base_url": "https://prnt.sc", "length": 6, "rate_limit": 1.0},
+    "youtu.be": {"base_url": "https://www.youtube.com/watch", "length": 11, "rate_limit": 1.0},
 }
 
 
@@ -107,8 +108,12 @@ def _apply_heuristics(domain: str, charset: str, length: int) -> str:
     if domain == "prnt.sc":
         if length == 6:
             result = string.ascii_lowercase
-        elif length > 6:
+        else:
             result = string.ascii_letters + string.digits
+    elif domain in {"ibb.co", "puu.sh", "imgur.com", "i.imgur.com", "gyazo.com", "cl.ly"}:
+        result = string.ascii_letters + string.digits
+    elif domain == "youtu.be":
+        result = string.ascii_letters + string.digits + "-_"
     logger.debug("Heuristics result for %s: %s", domain, result)
     return result
 
@@ -117,12 +122,16 @@ def save_distributions() -> None:
         "valid": {d: {str(k): [dict(c) for c in v] for k, v in lv.items()} for d, lv in code_distributions.items()},
         "invalid": {d: {str(k): [dict(c) for c in v] for k, v in lv.items()} for d, lv in invalid_distributions.items()},
     }
+    logger.info("Saving statistics to %s", STATS_FILE)
     with open(STATS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+    logger.info("Saved statistics to %s", STATS_FILE)
 
 def load_distributions() -> None:
     if not os.path.exists(STATS_FILE):
+        logger.info("Statistics file %s does not exist", STATS_FILE)
         return
+    logger.info("Loading statistics from %s", STATS_FILE)
     with open(STATS_FILE, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -144,7 +153,7 @@ def load_distributions() -> None:
 
 async def fetch_image(session: aiohttp.ClientSession, url: str, headers=None) -> bytes | None:
     try:
-        async with session.get(url, headers=headers) as resp:
+        async with session.get(url, headers=headers, timeout=10) as resp:
             status = resp.status
             content_type = resp.headers.get("Content-Type", "")
             if status == 200 and content_type.startswith("image"):
@@ -310,6 +319,25 @@ async def fetch_imgur_image(session: aiohttp.ClientSession, url: str, headers=No
         logger.warning("Checked %s -> error: %s", url, exc)
     return None
 
+async def check_youtube_video(
+    browser: Browser,
+    session: aiohttp.ClientSession,
+    url: str,
+    code: str,
+    headers=None,
+) -> bool:
+    """Return True if the YouTube watch page exists."""
+    try:
+        async with session.get(url, headers=headers, timeout=10) as resp:
+            if resp.status == 200:
+                return True
+            logger.info("Checked %s -> HTTP %s", url, resp.status)
+    except asyncio.TimeoutError:
+        logger.warning("Checked %s -> not found (timeout)", url)
+    except Exception as exc:
+        logger.warning("Checked %s -> error: %s", url, exc)
+    return False
+
 SCRAPER_MAP = {
     "ibb.co": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "puu.sh": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
@@ -318,6 +346,7 @@ SCRAPER_MAP = {
     "gyazo.com": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "cl.ly": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "prnt.sc": lambda browser, session, url, code, headers: fetch_prntsc_image(browser, session, url, headers=headers),
+    "youtu.be": check_youtube_video,
 }
 
 async def scrape_loop():
@@ -362,7 +391,10 @@ async def scrape_loop():
                                 logger.debug(
                                     "Generated code for %s: %s", domain, code
                                 )
-                                url = f"{base_url}/{code}"
+                                if domain == "youtu.be":
+                                    url = f"{base_url}?v={code}"
+                                else:
+                                    url = f"{base_url}/{code}"
                                 if url in tested_urls:
                                     await asyncio.sleep(0)
                                     continue
@@ -375,21 +407,21 @@ async def scrape_loop():
                                     break
 
                                 try:
-                                    image_data = await asyncio.wait_for(
+                                    result = await asyncio.wait_for(
                                         fetcher(browser, session, url, code, headers),
                                         timeout=15,
                                     )
                                 except asyncio.TimeoutError:
                                     logger.warning("Checked %s -> timeout (hard cap exceeded)", url)
-                                    image_data = None
+                                    result = None
                                 except Exception as exc:
                                     logger.warning("Checked %s -> error: %s", url, exc)
-                                    image_data = None
+                                    result = None
                                 else:
                                     logger.debug(
                                         "Fetcher completed for %s -> %s",
                                         url,
-                                        "image" if image_data else "not found",
+                                        "success" if result else "not found",
                                     )
 
                                 scrape_count += 1
@@ -402,25 +434,49 @@ async def scrape_loop():
                                     logger.info("Heartbeat: processed %d URLs", scrape_count)
                                     save_distributions()
 
-                                if image_data is None:
-                                    _update_distribution(domain, code, valid=False)
-                                    await asyncio.sleep(rate_limit)
+                                if domain == "youtu.be":
+                                    if not result:
+                                        _update_distribution(domain, code, valid=False)
+                                        await asyncio.sleep(rate_limit)
+                                        break
+                                    logger.info("Found video %s", url)
+                                    _update_distribution(domain, code, valid=True)
+                                    channel = client.get_channel(CHANNEL_ID)
+                                    if not channel:
+                                        logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
+                                    else:
+                                        try:
+                                            await asyncio.wait_for(
+                                                channel.send(url),
+                                                timeout=10,
+                                            )
+                                        except Exception as e:
+                                            logger.error("Failed to send message to Discord: %s", e)
                                     break
-
-                                logger.info("Found image %s", url)
-                                _update_distribution(domain, code, valid=True)
-
-                                channel = client.get_channel(CHANNEL_ID)
-                                if not channel:
-                                    logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
                                 else:
-                                    try:
-                                        file = discord.File(io.BytesIO(image_data), filename="image.png")
-                                        embed = discord.Embed(url=url)
-                                        embed.set_image(url="attachment://image.png")
-                                        await channel.send(url, embed=embed, file=file)
-                                    except Exception as e:
-                                        logger.error("Failed to send message to Discord: %s", e)
+                                    image_data = result
+                                    if image_data is None:
+                                        _update_distribution(domain, code, valid=False)
+                                        await asyncio.sleep(rate_limit)
+                                        break
+
+                                    logger.info("Found image %s", url)
+                                    _update_distribution(domain, code, valid=True)
+
+                                    channel = client.get_channel(CHANNEL_ID)
+                                    if not channel:
+                                        logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
+                                    else:
+                                        try:
+                                            file = discord.File(io.BytesIO(image_data), filename="image.png")
+                                            embed = discord.Embed(url=url)
+                                            embed.set_image(url="attachment://image.png")
+                                            await asyncio.wait_for(
+                                                channel.send(url, embed=embed, file=file),
+                                                timeout=10,
+                                            )
+                                        except Exception as e:
+                                            logger.error("Failed to send message to Discord: %s", e)
                                 break
 
                             await asyncio.sleep(rate_limit)
@@ -436,14 +492,14 @@ async def scrape_loop():
         finally:
             if browser:
                 try:
-                    await browser.close()
+                    await asyncio.wait_for(browser.close(), timeout=10)
                     logger.info("Browser closed")
                 except Exception as exc:
                     logger.warning("Failed to close browser: %s", exc)
                 browser = None
             if p:
                 try:
-                    await p.stop()
+                    await asyncio.wait_for(p.stop(), timeout=10)
                     logger.info("Playwright stopped")
                 except Exception as exc:
                     logger.warning("Failed to stop Playwright: %s", exc)
@@ -451,16 +507,16 @@ async def scrape_loop():
     logger.warning("scrape_loop exited")
 
 def generate_code(domain: str, length: int, charset: str) -> str:
+    """Generate a code biased by collected statistics but still random."""
     dist = code_distributions.get(domain, {}).get(length)
-    if not dist:
-        return "".join(random.choice(charset) for _ in range(length))
     result = []
     for i in range(length):
-        if i < len(dist) and dist[i]:
-            chars, weights = zip(*dist[i].items())
-            result.append(random.choices(chars, weights=weights, k=1)[0])
-        else:
-            result.append(random.choice(charset))
+        weight_map = {ch: 1 for ch in charset}
+        if dist and i < len(dist):
+            for ch, w in dist[i].items():
+                weight_map[ch] = weight_map.get(ch, 1) + w
+        chars, weights = zip(*weight_map.items())
+        result.append(random.choices(chars, weights=weights, k=1)[0])
     return "".join(result)
 
 if __name__ == "__main__":

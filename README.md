@@ -18,6 +18,7 @@ The bot has a built-in list of supported services so no additional configuration
 | gyazo.com | 36 |
 | cl.ly | 6 |
 | prnt.sc | 6 |
+| youtu.be | 11 (checked via `https://www.youtube.com/watch?v=CODE`) |
 
 ```
 {
