@@ -68,6 +68,29 @@ TEXT_DOMAINS = {"pastebin.com", "gist.github.com"}
 SHORTENER_DOMAINS = {"tinyurl.com", "is.gd", "bit.ly"}
 
 
+async def capture_page_screenshot(
+    browser: Browser, url: str, headers=None
+) -> bytes | None:
+    """Return a screenshot of the given page using Playwright."""
+    context = await browser.new_context()
+    try:
+        page = await context.new_page()
+        try:
+            await page.set_extra_http_headers(headers or {})
+            await page.goto(url, timeout=10000, wait_until="domcontentloaded")
+            return await page.screenshot(full_page=True)
+        finally:
+            try:
+                await asyncio.shield(page.close())
+            except Exception as exc:
+                logger.warning("Failed to close screenshot page %s: %s", url, exc)
+    except Exception as exc:
+        logger.warning("Failed to capture screenshot for %s: %s", url, exc)
+    finally:
+        await context.close()
+    return None
+
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("bot")
 
@@ -459,29 +482,31 @@ async def check_text_page(
     return False
 
 
-async def check_shortener_link(
+async def fetch_shortener_screenshot(
     browser: Browser,
     session: aiohttp.ClientSession,
     url: str,
     code: str,
     headers=None,
-) -> bool:
-    """Return True if the shortener redirects to a different domain."""
+) -> tuple[str, bytes | None] | None:
+    """Follow the shortener and return final URL with a screenshot."""
     try:
         async with session.get(url, headers=headers, timeout=10, allow_redirects=True) as resp:
             if resp.status == 404:
                 logger.info("Checked %s -> HTTP 404", url)
-                return False
+                return None
             initial_host = urlparse(url).hostname
-            final_host = urlparse(str(resp.url)).hostname
+            final_url = str(resp.url)
+            final_host = urlparse(final_url).hostname
             if final_host and initial_host and final_host != initial_host:
-                return True
+                screenshot = await capture_page_screenshot(browser, final_url, headers=headers)
+                return final_url, screenshot
             logger.info("Checked %s -> HTTP %s", url, resp.status)
     except asyncio.TimeoutError:
         logger.warning("Checked %s -> not found (timeout)", url)
     except Exception as exc:
         logger.warning("Checked %s -> error: %s", url, exc)
-    return False
+    return None
 
 SCRAPER_MAP = {
     "ibb.co": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
@@ -494,9 +519,9 @@ SCRAPER_MAP = {
     "youtu.be": check_youtube_video,
     "vgy.me": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "catbox.moe": lambda browser, session, url, code, headers: fetch_image(session, url, headers=headers),
-    "tinyurl.com": check_shortener_link,
-    "is.gd": check_shortener_link,
-    "bit.ly": check_shortener_link,
+    "tinyurl.com": fetch_shortener_screenshot,
+    "is.gd": fetch_shortener_screenshot,
+    "bit.ly": fetch_shortener_screenshot,
     "pastebin.com": check_text_page,
     "gist.github.com": check_text_page,
 }
@@ -640,7 +665,8 @@ async def scrape_loop():
                                 update_domain_weight(domain, False)
                                 await asyncio.sleep(rate_limit)
                                 continue
-                            logger.info("Found redirect %s", url)
+                            final_url, screenshot_data = result
+                            logger.info("Found redirect %s -> %s", url, final_url)
                             _update_distribution(domain, code, valid=True)
                             update_domain_weight(domain, True)
                             channel = client.get_channel(CHANNEL_ID)
@@ -648,10 +674,20 @@ async def scrape_loop():
                                 logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
                             else:
                                 try:
-                                    await asyncio.wait_for(
-                                        channel.send(url),
-                                        timeout=10,
-                                    )
+                                    if screenshot_data:
+                                        file = discord.File(io.BytesIO(screenshot_data), filename="screenshot.png")
+                                        embed = discord.Embed(url=final_url)
+                                        embed.set_image(url="attachment://screenshot.png")
+                                        content = f"{url} -> {final_url}"
+                                        await asyncio.wait_for(
+                                            channel.send(content, embed=embed, file=file),
+                                            timeout=10,
+                                        )
+                                    else:
+                                        await asyncio.wait_for(
+                                            channel.send(f"{url} -> {final_url}"),
+                                            timeout=10,
+                                        )
                                 except Exception as e:
                                     logger.error("Failed to send message to Discord: %s", e)
                         else:
