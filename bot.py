@@ -9,6 +9,7 @@ import string
 import time
 import html
 from collections import Counter, defaultdict
+from urllib.parse import urlparse
 
 import aiohttp
 import discord
@@ -59,10 +60,12 @@ WEIGHT_INCREASE = 0.1
 WEIGHT_DECREASE = 0.1
 
 # Domains that host text rather than images. For these we simply verify that a
-
-# Domains that host text rather than images. For these we simply verify that a
 # page exists and send the link without attempting to embed an image.
 TEXT_DOMAINS = {"pastebin.com", "gist.github.com"}
+
+# URL shortener domains. These are considered valid if they redirect to a
+# different domain without returning a 404.
+SHORTENER_DOMAINS = {"tinyurl.com", "is.gd", "bit.ly"}
 
 
 logging.basicConfig(level=logging.INFO)
@@ -455,6 +458,31 @@ async def check_text_page(
         logger.warning("Checked %s -> error: %s", url, exc)
     return False
 
+
+async def check_shortener_link(
+    browser: Browser,
+    session: aiohttp.ClientSession,
+    url: str,
+    code: str,
+    headers=None,
+) -> bool:
+    """Return True if the shortener redirects to a different domain."""
+    try:
+        async with session.get(url, headers=headers, timeout=10, allow_redirects=True) as resp:
+            if resp.status == 404:
+                logger.info("Checked %s -> HTTP 404", url)
+                return False
+            initial_host = urlparse(url).hostname
+            final_host = urlparse(str(resp.url)).hostname
+            if final_host and initial_host and final_host != initial_host:
+                return True
+            logger.info("Checked %s -> HTTP %s", url, resp.status)
+    except asyncio.TimeoutError:
+        logger.warning("Checked %s -> not found (timeout)", url)
+    except Exception as exc:
+        logger.warning("Checked %s -> error: %s", url, exc)
+    return False
+
 SCRAPER_MAP = {
     "ibb.co": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "puu.sh": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
@@ -466,9 +494,9 @@ SCRAPER_MAP = {
     "youtu.be": check_youtube_video,
     "vgy.me": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "catbox.moe": lambda browser, session, url, code, headers: fetch_image(session, url, headers=headers),
-    "tinyurl.com": lambda browser, session, url, code, headers: fetch_image(session, url, headers=headers),
-    "is.gd": lambda browser, session, url, code, headers: fetch_image(session, url, headers=headers),
-    "bit.ly": lambda browser, session, url, code, headers: fetch_image(session, url, headers=headers),
+    "tinyurl.com": check_shortener_link,
+    "is.gd": check_shortener_link,
+    "bit.ly": check_shortener_link,
     "pastebin.com": check_text_page,
     "gist.github.com": check_text_page,
 }
@@ -553,12 +581,18 @@ async def scrape_loop():
                             logger.info("Watchdog: still alive, %d URLs tested", scrape_count)
                             last_log = time.time()
 
-                        if scrape_count % SAVE_STATS_EVERY == 0:
-                            logger.info("Heartbeat: processed %d URLs", scrape_count)
-                            save_distributions()
                         if scrape_count % SAVE_WEIGHTS_EVERY == 0:
+                            logger.info(
+                                "Heartbeat: processed %d URLs", scrape_count
+                            )
+                            save_distributions()
                             save_domain_stats()
                             load_domain_stats()
+                        elif scrape_count % SAVE_STATS_EVERY == 0:
+                            logger.info(
+                                "Heartbeat: processed %d URLs", scrape_count
+                            )
+                            save_distributions()
 
                         if domain == "youtu.be":
                             if not result:
@@ -587,6 +621,26 @@ async def scrape_loop():
                                 await asyncio.sleep(rate_limit)
                                 continue
                             logger.info("Found page %s", url)
+                            _update_distribution(domain, code, valid=True)
+                            update_domain_weight(domain, True)
+                            channel = client.get_channel(CHANNEL_ID)
+                            if not channel:
+                                logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
+                            else:
+                                try:
+                                    await asyncio.wait_for(
+                                        channel.send(url),
+                                        timeout=10,
+                                    )
+                                except Exception as e:
+                                    logger.error("Failed to send message to Discord: %s", e)
+                        elif domain in SHORTENER_DOMAINS:
+                            if not result:
+                                _update_distribution(domain, code, valid=False)
+                                update_domain_weight(domain, False)
+                                await asyncio.sleep(rate_limit)
+                                continue
+                            logger.info("Found redirect %s", url)
                             _update_distribution(domain, code, valid=True)
                             update_domain_weight(domain, True)
                             channel = client.get_channel(CHANNEL_ID)
