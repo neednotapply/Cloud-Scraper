@@ -327,10 +327,20 @@ async def check_youtube_video(
     code: str,
     headers=None,
 ) -> bool:
-    """Check if a YouTube video exists."""
+
+ main
     try:
         async with session.get(url, headers=headers, timeout=10) as resp:
             if resp.status == 200:
+                text = await resp.text(errors="ignore")
+                if (
+                    "promo-title style-scope ytd-background-promo-renderer" in text
+                    or "This video isn't available anymore" in text
+                    or "This video isn&#39;t available anymore" in text
+                    or "Video unavailable" in text
+                ):
+                    logger.info("Checked %s -> not found (unavailable)", url)
+                    return False
                 return True
             logger.info("Checked %s -> HTTP %s", url, resp.status)
     except asyncio.TimeoutError:
