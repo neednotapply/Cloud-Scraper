@@ -917,17 +917,21 @@ async def scrape_loop():
                                         file = discord.File(io.BytesIO(screenshot_data), filename="screenshot.png")
                                         embed = discord.Embed(url=final_url)
                                         embed.set_image(url="attachment://screenshot.png")
-                                        content = f"{url} -> {final_url}"
-                                        if domain in SHORTENER_DOMAINS:
-                                            content = f"`{url}` -> {final_url}"
+                                        display_host = urlparse(final_url).hostname or final_url
+                                        if display_host.startswith("www."):
+                                            display_host = display_host[4:]
+                                        link = f"[{display_host}]({final_url})"
+                                        content = f"`{url}` -> {link}"
                                         await asyncio.wait_for(
                                             channel.send(content, embed=embed, file=file),
                                             timeout=10,
                                         )
                                     else:
-                                        content = f"{url} -> {final_url}"
-                                        if domain in SHORTENER_DOMAINS:
-                                            content = f"`{url}` -> {final_url}"
+                                        display_host = urlparse(final_url).hostname or final_url
+                                        if display_host.startswith("www."):
+                                            display_host = display_host[4:]
+                                        link = f"[{display_host}]({final_url})"
+                                        content = f"`{url}` -> {link}"
                                         await asyncio.wait_for(
                                             channel.send(content),
                                             timeout=10,
