@@ -4,7 +4,9 @@ This bot attempts to discover public images hosted on [imgBB](https://imgbb.com)
 
 ## Configuration
 
-Copy `config.example.json` to `config.json` and fill in your Discord bot token and the channel ID you want to post found images to.
+Copy `config.example.json` to `config.json` and fill in your Discord bot token,
+the channel ID you want to post found images to, and the subreddit you want to
+probe.
 
 The bot has a built-in list of supported services so no additional configuration is required.
 
@@ -31,7 +33,8 @@ The bot has a built-in list of supported services so no additional configuration
 ```
 {
   "token": "YOUR_DISCORD_BOT_TOKEN",
-  "channel_id": 123456789012345678
+  "channel_id": 123456789012345678,
+  "reddit_subreddit": "foo"
 }
 ```
 
