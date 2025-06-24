@@ -15,7 +15,6 @@ The bot has a built-in list of supported services so no additional configuration
 | ibb.co | 8 |
 | puu.sh | 6 |
 | imgur.com / i.imgur.com | 7 |
-| gyazo.com | 36 |
 | cl.ly | 6 |
 | prnt.sc | 6 |
 | youtu.be | 11 (checked via `https://www.youtube.com/watch?v=CODE`) |
@@ -24,8 +23,9 @@ The bot has a built-in list of supported services so no additional configuration
 | tinyurl.com | 6 |
 | is.gd | 6 |
 | bit.ly | 7 |
+| rb.gy | 6 |
 | pastebin.com | 8 |
-| gist.github.com | 32 |
+| reddit.com | 6 |
 
 
 ```

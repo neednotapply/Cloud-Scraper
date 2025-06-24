@@ -34,7 +34,6 @@ DOMAINS = {
     "puu.sh": {"base_url": "https://puu.sh", "length": 6, "rate_limit": 1.0, "weight": 1.0},
     "imgur.com": {"base_url": "https://imgur.com", "length": 7, "rate_limit": 1.0, "weight": 1.0},
     "i.imgur.com": {"base_url": "https://i.imgur.com", "length": 7, "rate_limit": 1.0, "weight": 1.0},
-    "gyazo.com": {"base_url": "https://gyazo.com", "length": 36, "rate_limit": 1.0, "weight": 1.0},
     "cl.ly": {"base_url": "https://cl.ly", "length": 6, "rate_limit": 1.0, "weight": 1.0},
     "prnt.sc": {"base_url": "https://prnt.sc", "length": 6, "rate_limit": 1.0, "weight": 1.0},
     "youtu.be": {"base_url": "https://www.youtube.com/watch", "length": 11, "rate_limit": 1.0, "weight": 1.0},
@@ -49,8 +48,9 @@ DOMAINS = {
     "tinyurl.com": {"base_url": "https://tinyurl.com", "length": 6, "rate_limit": 1.0, "weight": 1.0},
     "is.gd": {"base_url": "https://is.gd", "length": 6, "rate_limit": 1.0, "weight": 1.0},
     "bit.ly": {"base_url": "https://bit.ly", "length": 7, "rate_limit": 1.0, "weight": 1.0},
+    "rb.gy": {"base_url": "https://rb.gy", "length": 6, "rate_limit": 1.0, "weight": 1.0},
     "pastebin.com": {"base_url": "https://pastebin.com", "length": 8, "rate_limit": 1.0, "weight": 1.0},
-    "gist.github.com": {"base_url": "https://gist.github.com", "length": 32, "rate_limit": 1.0, "weight": 1.0},
+    "reddit.com": {"base_url": "https://www.reddit.com/comments", "length": 6, "rate_limit": 1.0, "weight": 1.0},
 }
 
 # Weight configuration for each domain used to bias selection.
@@ -61,11 +61,11 @@ WEIGHT_DECREASE = 0.025
 
 # Domains that host text rather than images. For these we simply verify that a
 # page exists and send the link without attempting to embed an image.
-TEXT_DOMAINS = {"pastebin.com", "gist.github.com"}
+TEXT_DOMAINS = {"pastebin.com", "reddit.com"}
 
 # URL shortener domains. These are considered valid if they redirect to a
 # different domain without returning a 404.
-SHORTENER_DOMAINS = {"tinyurl.com", "is.gd", "bit.ly"}
+SHORTENER_DOMAINS = {"tinyurl.com", "is.gd", "bit.ly", "rb.gy"}
 
 
 async def capture_page_screenshot(
@@ -177,12 +177,13 @@ def _apply_heuristics(domain: str, charset: str, length: int) -> str:
             result = string.ascii_lowercase
         else:
             result = string.ascii_letters + string.digits
-    elif domain in {"ibb.co", "puu.sh", "imgur.com", "i.imgur.com", "gyazo.com", "cl.ly", "vgy.me", "tinyurl.com", "is.gd", "bit.ly"}:
+    elif domain in {"ibb.co", "puu.sh", "imgur.com", "i.imgur.com", "cl.ly", "vgy.me", "tinyurl.com", "is.gd", "bit.ly", "rb.gy"}:
         result = string.ascii_letters + string.digits
     elif domain == "pastebin.com":
         result = ''.join(ch for ch in (string.ascii_letters + string.digits) if ch not in "0OlI")
-    elif domain == "gist.github.com":
-        result = "0123456789abcdef"
+    elif domain == "reddit.com":
+        # Reddit post IDs are base36: digits and lowercase letters in any order
+        result = string.digits + string.ascii_lowercase
     elif domain == "catbox.moe":
         result = string.ascii_lowercase + string.digits
     elif domain == "youtu.be":
@@ -513,7 +514,6 @@ SCRAPER_MAP = {
     "puu.sh": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "imgur.com": lambda browser, session, url, code, headers: fetch_imgur_image(session, url, headers=headers),
     "i.imgur.com": lambda browser, session, url, code, headers: fetch_imgur_image(session, url, headers=headers),
-    "gyazo.com": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "cl.ly": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "prnt.sc": lambda browser, session, url, code, headers: fetch_prntsc_image(browser, session, url, headers=headers),
     "youtu.be": check_youtube_video,
@@ -522,8 +522,9 @@ SCRAPER_MAP = {
     "tinyurl.com": fetch_shortener_screenshot,
     "is.gd": fetch_shortener_screenshot,
     "bit.ly": fetch_shortener_screenshot,
+    "rb.gy": fetch_shortener_screenshot,
     "pastebin.com": check_text_page,
-    "gist.github.com": check_text_page,
+    "reddit.com": check_text_page,
 }
 
 async def scrape_loop():
