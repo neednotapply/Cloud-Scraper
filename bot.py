@@ -18,6 +18,7 @@ from playwright.async_api import async_playwright, Browser
 CONFIG_FILE = "config.json"
 STATS_FILE = "char_stats.json"
 DOMAIN_STATS_FILE = "domain_stats.json"
+PATTERN_STATS_FILE = "pattern_stats.json"
 
 if not os.path.exists(CONFIG_FILE):
     raise RuntimeError(f"Missing {CONFIG_FILE}. See config.example.json")
@@ -141,7 +142,8 @@ async def on_resumed():
 tested_urls = set()
 
 code_distributions: dict[str, dict[int, list[Counter]]] = defaultdict(lambda: defaultdict(list))
-invalid_distributions: dict[str, dict[int, list[Counter]]] = defaultdict(lambda: defaultdict(list))
+position_category_stats: dict[str, dict[int, list[Counter]]] = defaultdict(lambda: defaultdict(list))
+total_category_stats: dict[str, dict[int, Counter]] = defaultdict(lambda: defaultdict(Counter))
 
 SAVE_STATS_EVERY = 50
 SAVE_WEIGHTS_EVERY = 50
@@ -149,13 +151,25 @@ scrape_count = 0
 
 ALL_CHARS = string.ascii_letters + string.digits
 
-def _update_distribution(domain: str, code: str, valid: bool = True) -> None:
-    dist_map = code_distributions if valid else invalid_distributions
+def _char_category(ch: str) -> str:
+    if ch.islower():
+        return "lower"
+    if ch.isupper():
+        return "upper"
+    if ch.isdigit():
+        return "digit"
+    return "other"
+
+def _update_distribution(domain: str, code: str) -> None:
     length = len(code)
-    while len(dist_map[domain][length]) < length:
-        dist_map[domain][length].append(Counter())
+    while len(code_distributions[domain][length]) < length:
+        code_distributions[domain][length].append(Counter())
+        position_category_stats[domain][length].append(Counter())
     for i, char in enumerate(code):
-        dist_map[domain][length][i][char] += 1
+        code_distributions[domain][length][i][char] += 1
+        category = _char_category(char)
+        position_category_stats[domain][length][i][category] += 1
+        total_category_stats[domain][length][category] += 1
 
 def update_domain_weight(domain: str, valid: bool) -> None:
     """Adjust domain weight based on whether a link was valid."""
@@ -202,13 +216,30 @@ def _apply_heuristics(domain: str, charset: str, length: int) -> str:
 
 def save_distributions() -> None:
     data = {
-        "valid": {d: {str(k): [dict(c) for c in v] for k, v in lv.items()} for d, lv in code_distributions.items()},
-        "invalid": {d: {str(k): [dict(c) for c in v] for k, v in lv.items()} for d, lv in invalid_distributions.items()},
+        "valid": {
+            d: {str(k): [dict(c) for c in v] for k, v in lv.items()}
+            for d, lv in code_distributions.items()
+        }
     }
     logger.info("Saving statistics to %s", STATS_FILE)
     with open(STATS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
     logger.info("Saved statistics to %s", STATS_FILE)
+
+def save_pattern_stats() -> None:
+    data = {}
+    for domain, lengths in position_category_stats.items():
+        domain_data = {}
+        for length, positions in lengths.items():
+            domain_data[str(length)] = {
+                "positions": [dict(c) for c in positions],
+                "totals": dict(total_category_stats[domain][length]),
+            }
+        data[domain] = domain_data
+    logger.info("Saving pattern statistics to %s", PATTERN_STATS_FILE)
+    with open(PATTERN_STATS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    logger.info("Saved pattern statistics to %s", PATTERN_STATS_FILE)
 
 def save_domain_stats() -> None:
     """Persist current domain weights to DOMAIN_STATS_FILE."""
@@ -233,17 +264,40 @@ def load_distributions() -> None:
 
     # Reset existing distributions before loading to avoid exponential growth
     code_distributions.clear()
-    invalid_distributions.clear()
+    position_category_stats.clear()
+    total_category_stats.clear()
 
     for domain, lengths in data.get("valid", {}).items():
         for length_str, counters in lengths.items():
             length = int(length_str)
             code_distributions[domain][length] = [Counter(c) for c in counters]
 
-    for domain, lengths in data.get("invalid", {}).items():
-        for length_str, counters in lengths.items():
+def load_pattern_stats() -> None:
+    logger.info("Loading pattern statistics from %s", PATTERN_STATS_FILE)
+    if not os.path.exists(PATTERN_STATS_FILE):
+        logger.info(
+            "Pattern stats file %s does not exist, creating defaults",
+            PATTERN_STATS_FILE,
+        )
+        save_pattern_stats()
+    try:
+        with open(PATTERN_STATS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError:
+        logger.warning("Pattern stats file %s is invalid, resetting", PATTERN_STATS_FILE)
+        save_pattern_stats()
+        with open(PATTERN_STATS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+    position_category_stats.clear()
+    total_category_stats.clear()
+
+    for domain, lengths in data.items():
+        for length_str, info in lengths.items():
             length = int(length_str)
-            invalid_distributions[domain][length] = [Counter(c) for c in counters]
+            pos_list = [Counter(c) for c in info.get("positions", [])]
+            position_category_stats[domain][length] = pos_list
+            total_category_stats[domain][length] = Counter(info.get("totals", {}))
 
 def load_domain_stats() -> None:
     """Load domain weights from DOMAIN_STATS_FILE if it exists."""
@@ -792,7 +846,9 @@ async def scrape_loop():
                                 "Heartbeat: processed %d URLs", scrape_count
                             )
                             save_distributions()
+                            save_pattern_stats()
                             load_distributions()
+                            load_pattern_stats()
                             save_domain_stats()
                             load_domain_stats()
                         elif scrape_count % SAVE_STATS_EVERY == 0:
@@ -800,16 +856,17 @@ async def scrape_loop():
                                 "Heartbeat: processed %d URLs", scrape_count
                             )
                             save_distributions()
+                            save_pattern_stats()
                             load_distributions()
+                            load_pattern_stats()
 
                         if domain == "youtu.be":
                             if not result:
-                                _update_distribution(domain, code, valid=False)
                                 update_domain_weight(domain, False)
                                 await asyncio.sleep(rate_limit)
                                 continue
                             logger.info("Found video %s", url)
-                            _update_distribution(domain, code, valid=True)
+                            _update_distribution(domain, code)
                             update_domain_weight(domain, True)
                             channel = client.get_channel(CHANNEL_ID)
                             if not channel:
@@ -824,13 +881,12 @@ async def scrape_loop():
                                     logger.error("Failed to send message to Discord: %s", e)
                         elif domain in TEXT_DOMAINS:
                             if not result:
-                                _update_distribution(domain, code, valid=False)
                                 update_domain_weight(domain, False)
                                 await asyncio.sleep(rate_limit)
                                 continue
                             final_url = result
                             logger.info("Found page %s", final_url)
-                            _update_distribution(domain, code, valid=True)
+                            _update_distribution(domain, code)
                             update_domain_weight(domain, True)
                             channel = client.get_channel(CHANNEL_ID)
                             if not channel:
@@ -845,13 +901,12 @@ async def scrape_loop():
                                     logger.error("Failed to send message to Discord: %s", e)
                         elif domain in SHORTENER_DOMAINS:
                             if not result:
-                                _update_distribution(domain, code, valid=False)
                                 update_domain_weight(domain, False)
                                 await asyncio.sleep(rate_limit)
                                 continue
                             final_url, screenshot_data = result
                             logger.info("Found redirect %s -> %s", url, final_url)
-                            _update_distribution(domain, code, valid=True)
+                            _update_distribution(domain, code)
                             update_domain_weight(domain, True)
                             channel = client.get_channel(CHANNEL_ID)
                             if not channel:
@@ -882,13 +937,12 @@ async def scrape_loop():
                         else:
                             image_data = result
                             if image_data is None:
-                                _update_distribution(domain, code, valid=False)
                                 update_domain_weight(domain, False)
                                 await asyncio.sleep(rate_limit)
                                 continue
 
                             logger.info("Found image %s", url)
-                            _update_distribution(domain, code, valid=True)
+                            _update_distribution(domain, code)
                             update_domain_weight(domain, True)
 
                             channel = client.get_channel(CHANNEL_ID)
@@ -936,18 +990,27 @@ async def scrape_loop():
 def generate_code(domain: str, length: int, charset: str) -> str:
     """Generate a code biased by collected statistics but still random."""
     dist = code_distributions.get(domain, {}).get(length)
+    pattern = position_category_stats.get(domain, {}).get(length)
     result = []
     for i in range(length):
         weight_map = {ch: 1 for ch in charset}
         if dist and i < len(dist):
             for ch, w in dist[i].items():
                 weight_map[ch] = weight_map.get(ch, 1) + w
+        if pattern and i < len(pattern):
+            counter = pattern[i]
+            total = sum(counter.values())
+            if total:
+                for ch in weight_map:
+                    cat = _char_category(ch)
+                    weight_map[ch] *= 1 + counter.get(cat, 0) / total
         chars, weights = zip(*weight_map.items())
         result.append(random.choices(chars, weights=weights, k=1)[0])
     return "".join(result)
 
 if __name__ == "__main__":
     load_distributions()
+    load_pattern_stats()
     load_domain_stats()
     if not TOKEN or not CHANNEL_ID:
         raise RuntimeError("token and channel_id must be set in config.json")

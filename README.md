@@ -49,7 +49,8 @@ python bot.py
 
 The bot will log attempts and post any discovered images to the configured Discord channel.
 
-Character frequency statistics are saved to `char_stats.json` and used to bias code generation toward more common letters for each domain. The file is loaded when the bot starts and written back regularly alongside the domain weights so learning persists between runs.
+Character frequency statistics are saved to `char_stats.json` and used to bias code generation toward more common letters for each domain. Only successful codes contribute to this file. The file is loaded when the bot starts and written back regularly alongside the domain weights so learning persists between runs.
+Additional heuristics about letter case and digit placement are recorded in `pattern_stats.json` using only successful codes.
 
 Each domain also maintains a simple weight that influences how often it is selected for testing. Domains start at `1.0` and increase by `0.1` whenever a link is valid. Invalid links decrease the weight by `0.01`, but a domain's weight will never drop below `1.0`. The current weights are stored in `domain_stats.json` so the bot can learn over time which services are more reliable.
 
