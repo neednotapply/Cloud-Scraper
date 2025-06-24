@@ -63,8 +63,8 @@ DOMAINS = {
 # Weight configuration for each domain used to bias selection.
 # These values are adjusted at runtime based on valid/invalid results.
 DOMAIN_WEIGHTS = {domain: cfg.get("weight", 1.0) for domain, cfg in DOMAINS.items()}
-WEIGHT_INCREASE = 0.1
-WEIGHT_DECREASE = 0.025
+WEIGHT_INCREASE = 0.1  # Applied when a link is valid
+WEIGHT_DECREASE = 0.01  # Applied when a link is invalid
 MAX_DOMAIN_WEIGHT = 10.0
 
 # Domains that host text rather than images. For these we simply verify that a
@@ -219,18 +219,18 @@ def save_domain_stats() -> None:
     logger.info("Saved domain weights to %s", DOMAIN_STATS_FILE)
 
 def load_distributions() -> None:
+    logger.info("Loading statistics from %s", STATS_FILE)
     if not os.path.exists(STATS_FILE):
         logger.info("Statistics file %s does not exist, creating defaults", STATS_FILE)
         save_distributions()
-        return
-    logger.info("Loading statistics from %s", STATS_FILE)
     try:
         with open(STATS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
     except json.JSONDecodeError:
         logger.warning("Statistics file %s is invalid, resetting", STATS_FILE)
         save_distributions()
-        return
+        with open(STATS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
     # Reset existing distributions before loading to avoid exponential growth
     code_distributions.clear()
@@ -478,6 +478,7 @@ async def check_text_page(
             final_url = str(resp.url)
             if urlparse(final_url).hostname == "www.reddit.com":
                 final_url = final_url.replace("https://www.reddit.com", "https://reddit.com", 1)
+            final_host = urlparse(final_url).hostname or ""
             text = await resp.text(errors="ignore")
             if resp.status == 200:
                 text_lower = text.lower()
@@ -492,6 +493,18 @@ async def check_text_page(
                 ):
                     logger.info("Checked %s -> not found (banned or unavailable)", url)
                     return None
+                if final_host.endswith("reddit.com"):
+                    json_url = final_url + ".json?raw_json=1"
+                    try:
+                        async with session.get(json_url, timeout=10) as jresp:
+                            if jresp.status == 200:
+                                data = await jresp.json()
+                                post = data[0]["data"]["children"][0]["data"]
+                                if post.get("is_self"):
+                                    logger.info("Checked %s -> not found (self post)", url)
+                                    return None
+                    except Exception as exc:
+                        logger.debug("Failed to check Reddit post type %s: %s", url, exc)
                 return final_url
             logger.info("Checked %s -> HTTP %s", url, resp.status)
     except asyncio.TimeoutError:
