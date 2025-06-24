@@ -27,6 +27,7 @@ with open(CONFIG_FILE, "r", encoding="utf-8") as f:
 
 TOKEN = config.get("token")
 CHANNEL_ID = int(config.get("channel_id", 0))
+REDDIT_SUBREDDIT = config.get("reddit_subreddit", "foo")
 
 # Built-in domain configuration
 DOMAINS = {
@@ -50,7 +51,13 @@ DOMAINS = {
     "bit.ly": {"base_url": "https://bit.ly", "length": 7, "rate_limit": 1.0, "weight": 1.0},
     "rb.gy": {"base_url": "https://rb.gy", "length": 6, "rate_limit": 1.0, "weight": 1.0},
     "pastebin.com": {"base_url": "https://pastebin.com", "length": 8, "rate_limit": 1.0, "weight": 1.0},
-    "reddit.com": {"base_url": "https://www.reddit.com/comments", "length": 6, "rate_limit": 1.0, "weight": 1.0},
+    # Use non-www host so Reddit links we send match the canonical form
+    "reddit.com": {
+        "base_url": f"https://reddit.com/r/{REDDIT_SUBREDDIT}/comments",
+        "length": 6,
+        "rate_limit": 1.0,
+        "weight": 1.0,
+    },
 }
 
 # Weight configuration for each domain used to bias selection.
@@ -463,9 +470,12 @@ async def check_text_page(
     url: str,
     code: str,
     headers=None,
-) -> bool:
+) -> str | None:
     try:
-        async with session.get(url, headers=headers, timeout=10) as resp:
+        async with session.get(url, headers=headers, timeout=10, allow_redirects=True) as resp:
+            final_url = str(resp.url)
+            if urlparse(final_url).hostname == "www.reddit.com":
+                final_url = final_url.replace("https://www.reddit.com", "https://reddit.com", 1)
             text = await resp.text(errors="ignore")
             if resp.status == 200:
                 if (
@@ -473,14 +483,14 @@ async def check_text_page(
                     or "This is not the web page you are looking for" in text
                 ):
                     logger.info("Checked %s -> not found (404 text)", url)
-                    return False
-                return True
+                    return None
+                return final_url
             logger.info("Checked %s -> HTTP %s", url, resp.status)
     except asyncio.TimeoutError:
         logger.warning("Checked %s -> not found (timeout)", url)
     except Exception as exc:
         logger.warning("Checked %s -> error: %s", url, exc)
-    return False
+    return None
 
 
 async def fetch_shortener_screenshot(
@@ -500,6 +510,9 @@ async def fetch_shortener_screenshot(
             final_url = str(resp.url)
             final_host = urlparse(final_url).hostname
             if final_host and initial_host and final_host != initial_host:
+                if initial_host == "rb.gy" and final_url.startswith("https://free-url-shortener.rb.gy/"):
+                    logger.info("Checked %s -> not found (homepage redirect)", url)
+                    return None
                 screenshot = await capture_page_screenshot(browser, final_url, headers=headers)
                 return final_url, screenshot
             logger.info("Checked %s -> HTTP %s", url, resp.status)
@@ -648,7 +661,8 @@ async def scrape_loop():
                                 update_domain_weight(domain, False)
                                 await asyncio.sleep(rate_limit)
                                 continue
-                            logger.info("Found page %s", url)
+                            final_url = result
+                            logger.info("Found page %s", final_url)
                             _update_distribution(domain, code, valid=True)
                             update_domain_weight(domain, True)
                             channel = client.get_channel(CHANNEL_ID)
@@ -657,7 +671,7 @@ async def scrape_loop():
                             else:
                                 try:
                                     await asyncio.wait_for(
-                                        channel.send(url),
+                                        channel.send(final_url),
                                         timeout=10,
                                     )
                                 except Exception as e:
