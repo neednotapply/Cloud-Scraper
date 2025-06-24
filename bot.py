@@ -493,6 +493,11 @@ async def check_text_page(
                 ):
                     logger.info("Checked %s -> not found (banned or unavailable)", url)
                     return None
+
+                if "post title: [deleted by user]" in text_lower or "[deleted by user]" in text_lower:
+                    logger.info("Checked %s -> not found (deleted by user)", url)
+                    return None
+
                 if final_host.endswith("reddit.com"):
                     json_url = final_url + ".json?raw_json=1"
                     try:
@@ -500,6 +505,14 @@ async def check_text_page(
                             if jresp.status == 200:
                                 data = await jresp.json()
                                 post = data[0]["data"]["children"][0]["data"]
+                                title = (post.get("title") or "").strip().lower()
+                                author = (post.get("author") or "").strip().lower()
+                                if title in {"[deleted by user]", "[deleted]", "[removed]"}:
+                                    logger.info("Checked %s -> not found (deleted post)", url)
+                                    return None
+                                if author == "[deleted]":
+                                    logger.info("Checked %s -> not found (deleted post)", url)
+                                    return None
                                 if post.get("is_self"):
                                     logger.info("Checked %s -> not found (self post)", url)
                                     return None
