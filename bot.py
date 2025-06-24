@@ -27,7 +27,6 @@ with open(CONFIG_FILE, "r", encoding="utf-8") as f:
 
 TOKEN = config.get("token")
 CHANNEL_ID = int(config.get("channel_id", 0))
-REDDIT_SUBREDDIT = config.get("reddit_subreddit", "foo")
 
 # Built-in domain configuration
 DOMAINS = {
@@ -53,7 +52,7 @@ DOMAINS = {
     "pastebin.com": {"base_url": "https://pastebin.com", "length": 8, "rate_limit": 1.0, "weight": 1.0},
     # Use non-www host so Reddit links we send match the canonical form
     "reddit.com": {
-        "base_url": f"https://reddit.com/r/{REDDIT_SUBREDDIT}/comments",
+        "base_url": "https://reddit.com/comments",
         "length": 6,
         "rate_limit": 1.0,
         "weight": 1.0,
@@ -69,11 +68,11 @@ MAX_DOMAIN_WEIGHT = 10.0
 
 # Domains that host text rather than images. For these we simply verify that a
 # page exists and send the link without attempting to embed an image.
-TEXT_DOMAINS = {"pastebin.com", "reddit.com"}
+TEXT_DOMAINS = {"pastebin.com"}
 
 # URL shortener domains. These are considered valid if they redirect to a
 # different domain without returning a 404.
-SHORTENER_DOMAINS = {"tinyurl.com", "is.gd", "bit.ly", "rb.gy"}
+SHORTENER_DOMAINS = {"tinyurl.com", "is.gd", "bit.ly", "rb.gy", "reddit.com"}
 
 
 async def capture_page_screenshot(
@@ -498,6 +497,16 @@ async def check_text_page(
                     logger.info("Checked %s -> not found (deleted by user)", url)
                     return None
 
+                # Additional check for deleted users indicated by a faceplate tracker element
+                if (
+                    "faceplate-tracker" in text_lower
+                    and "post_credit_bar" in text_lower
+                    and "user_profile" in text_lower
+                    and ">[deleted]</div>" in text_lower
+                ):
+                    logger.info("Checked %s -> not found (deleted user)", url)
+                    return None
+
                 if final_host.endswith("reddit.com"):
                     json_url = final_url + ".json?raw_json=1"
                     try:
@@ -508,16 +517,44 @@ async def check_text_page(
                                 title = (post.get("title") or "").strip().lower()
                                 author = (post.get("author") or "").strip().lower()
                                 if title in {"[deleted by user]", "[deleted]", "[removed]"}:
-                                    logger.info("Checked %s -> not found (deleted post)", url)
+                                    logger.info(
+                                        "Checked %s -> not found (deleted post)",
+                                        url,
+                                    )
                                     return None
                                 if author == "[deleted]":
-                                    logger.info("Checked %s -> not found (deleted post)", url)
+                                    logger.info(
+                                        "Checked %s -> not found (deleted post)",
+                                        url,
+                                    )
                                     return None
                                 if post.get("is_self"):
-                                    logger.info("Checked %s -> not found (self post)", url)
+                                    logger.info(
+                                        "Checked %s -> not found (self post)", url
+                                    )
+                                    return None
+
+                                crossposts = post.get("crosspost_parent_list")
+                                if crossposts:
+                                    parent = crossposts[0]
+                                    if parent.get("is_self"):
+                                        logger.info(
+                                            "Checked %s -> not found (self crosspost)",
+                                            url,
+                                        )
+                                        return None
+                                    post = parent
+
+                                if not (
+                                    post.get("post_hint") in {"image", "hosted:video", "rich:video"}
+                                    or post.get("is_video")
+                                ):
+                                    logger.info("Checked %s -> not found (no media)", url)
                                     return None
                     except Exception as exc:
-                        logger.debug("Failed to check Reddit post type %s: %s", url, exc)
+                        logger.debug(
+                            "Failed to check Reddit post type %s: %s", url, exc
+                        )
                 return final_url
             logger.info("Checked %s -> HTTP %s", url, resp.status)
     except asyncio.TimeoutError:
@@ -556,6 +593,102 @@ async def fetch_shortener_screenshot(
         logger.warning("Checked %s -> error: %s", url, exc)
     return None
 
+
+async def fetch_reddit_redirect(
+    browser: Browser,
+    session: aiohttp.ClientSession,
+    url: str,
+    code: str,
+    headers=None,
+) -> tuple[str, bytes | None] | None:
+    """Return the linked media URL from a Reddit post."""
+    try:
+        async with session.get(url, headers=headers, timeout=10, allow_redirects=True) as resp:
+            if resp.status != 200:
+                logger.info("Checked %s -> HTTP %s", url, resp.status)
+                return None
+
+            final_url = str(resp.url)
+            if urlparse(final_url).hostname == "www.reddit.com":
+                final_url = final_url.replace("https://www.reddit.com", "https://reddit.com", 1)
+
+            text = await resp.text(errors="ignore")
+            text_lower = text.lower()
+            if (
+                "this page is no longer available" in text_lower
+                or "this is not the web page you are looking for" in text_lower
+                or "this subreddit was banned" in text_lower
+                or "this community has been banned" in text_lower
+                or "this subreddit has been banned" in text_lower
+                or "this community is private" in text_lower
+                or "you must be 18+ to view this community" in text_lower
+            ):
+                logger.info("Checked %s -> not found (banned or unavailable)", url)
+                return None
+
+            if "post title: [deleted by user]" in text_lower or "[deleted by user]" in text_lower:
+                logger.info("Checked %s -> not found (deleted by user)", url)
+                return None
+
+            if (
+                "faceplate-tracker" in text_lower
+                and "post_credit_bar" in text_lower
+                and "user_profile" in text_lower
+                and ">[deleted]</div>" in text_lower
+            ):
+                logger.info("Checked %s -> not found (deleted user)", url)
+                return None
+
+            json_url = final_url + ".json?raw_json=1"
+            try:
+                async with session.get(json_url, timeout=10) as jresp:
+                    if jresp.status != 200:
+                        logger.info("Checked %s -> HTTP %s (json)", url, jresp.status)
+                        return None
+                    data = await jresp.json()
+            except Exception as exc:
+                logger.debug("Failed to fetch Reddit JSON %s: %s", url, exc)
+                return None
+
+            post = data[0]["data"]["children"][0]["data"]
+            title = (post.get("title") or "").strip().lower()
+            author = (post.get("author") or "").strip().lower()
+            if title in {"[deleted by user]", "[deleted]", "[removed]"}:
+                logger.info("Checked %s -> not found (deleted post)", url)
+                return None
+            if author == "[deleted]":
+                logger.info("Checked %s -> not found (deleted post)", url)
+                return None
+            if post.get("is_self"):
+                logger.info("Checked %s -> not found (self post)", url)
+                return None
+
+            crossposts = post.get("crosspost_parent_list")
+            if crossposts:
+                parent = crossposts[0]
+                if parent.get("is_self"):
+                    logger.info("Checked %s -> not found (self crosspost)", url)
+                    return None
+                post = parent
+
+            if not (
+                post.get("post_hint") in {"image", "hosted:video", "rich:video"}
+                or post.get("is_video")
+            ):
+                logger.info("Checked %s -> not found (no media)", url)
+                return None
+
+            redirect = post.get("url_overridden_by_dest") or post.get("url")
+            if redirect:
+                if redirect.startswith("/"):
+                    redirect = "https://reddit.com" + redirect
+                return redirect, None
+    except asyncio.TimeoutError:
+        logger.warning("Checked %s -> not found (timeout)", url)
+    except Exception as exc:
+        logger.warning("Checked %s -> error: %s", url, exc)
+    return None
+
 SCRAPER_MAP = {
     "ibb.co": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "puu.sh": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
@@ -571,7 +704,7 @@ SCRAPER_MAP = {
     "bit.ly": fetch_shortener_screenshot,
     "rb.gy": fetch_shortener_screenshot,
     "pastebin.com": check_text_page,
-    "reddit.com": check_text_page,
+    "reddit.com": fetch_reddit_redirect,
 }
 
 async def scrape_loop():
