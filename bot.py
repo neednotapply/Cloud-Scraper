@@ -65,6 +65,7 @@ DOMAINS = {
 DOMAIN_WEIGHTS = {domain: cfg.get("weight", 1.0) for domain, cfg in DOMAINS.items()}
 WEIGHT_INCREASE = 0.1
 WEIGHT_DECREASE = 0.025
+MAX_DOMAIN_WEIGHT = 10.0
 
 # Domains that host text rather than images. For these we simply verify that a
 # page exists and send the link without attempting to embed an image.
@@ -160,7 +161,9 @@ def _update_distribution(domain: str, code: str, valid: bool = True) -> None:
 def update_domain_weight(domain: str, valid: bool) -> None:
     """Adjust domain weight based on whether a link was valid."""
     if valid:
-        DOMAIN_WEIGHTS[domain] += WEIGHT_INCREASE
+        DOMAIN_WEIGHTS[domain] = min(
+            MAX_DOMAIN_WEIGHT, DOMAIN_WEIGHTS[domain] + WEIGHT_INCREASE
+        )
     else:
         DOMAIN_WEIGHTS[domain] = max(1.0, DOMAIN_WEIGHTS[domain] - WEIGHT_DECREASE)
 
@@ -229,21 +232,19 @@ def load_distributions() -> None:
         save_distributions()
         return
 
+    # Reset existing distributions before loading to avoid exponential growth
+    code_distributions.clear()
+    invalid_distributions.clear()
+
     for domain, lengths in data.get("valid", {}).items():
         for length_str, counters in lengths.items():
             length = int(length_str)
-            while len(code_distributions[domain][length]) < len(counters):
-                code_distributions[domain][length].append(Counter())
-            for i, counter_dict in enumerate(counters):
-                code_distributions[domain][length][i].update(counter_dict)
+            code_distributions[domain][length] = [Counter(c) for c in counters]
 
     for domain, lengths in data.get("invalid", {}).items():
         for length_str, counters in lengths.items():
             length = int(length_str)
-            while len(invalid_distributions[domain][length]) < len(counters):
-                invalid_distributions[domain][length].append(Counter())
-            for i, counter_dict in enumerate(counters):
-                invalid_distributions[domain][length][i].update(counter_dict)
+            invalid_distributions[domain][length] = [Counter(c) for c in counters]
 
 def load_domain_stats() -> None:
     """Load domain weights from DOMAIN_STATS_FILE if it exists."""
@@ -264,7 +265,8 @@ def load_domain_stats() -> None:
         return
     for domain, weight in data.items():
         if domain in DOMAIN_WEIGHTS:
-            DOMAIN_WEIGHTS[domain] = max(1.0, float(weight))
+            w = max(1.0, float(weight))
+            DOMAIN_WEIGHTS[domain] = min(MAX_DOMAIN_WEIGHT, w)
 
 async def fetch_image(session: aiohttp.ClientSession, url: str, headers=None) -> bytes | None:
     try:
@@ -478,11 +480,17 @@ async def check_text_page(
                 final_url = final_url.replace("https://www.reddit.com", "https://reddit.com", 1)
             text = await resp.text(errors="ignore")
             if resp.status == 200:
+                text_lower = text.lower()
                 if (
-                    "This page is no longer available" in text
-                    or "This is not the web page you are looking for" in text
+                    "this page is no longer available" in text_lower
+                    or "this is not the web page you are looking for" in text_lower
+                    or "this subreddit was banned" in text_lower
+                    or "this community has been banned" in text_lower
+                    or "this subreddit has been banned" in text_lower
+                    or "this community is private" in text_lower
+                    or "you must be 18+ to view this community" in text_lower
                 ):
-                    logger.info("Checked %s -> not found (404 text)", url)
+                    logger.info("Checked %s -> not found (banned or unavailable)", url)
                     return None
                 return final_url
             logger.info("Checked %s -> HTTP %s", url, resp.status)
