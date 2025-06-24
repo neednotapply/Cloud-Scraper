@@ -863,13 +863,18 @@ async def scrape_loop():
                                         embed = discord.Embed(url=final_url)
                                         embed.set_image(url="attachment://screenshot.png")
                                         content = f"{url} -> {final_url}"
+                                        if domain in SHORTENER_DOMAINS:
+                                            content = f"`{url}` -> {final_url}"
                                         await asyncio.wait_for(
                                             channel.send(content, embed=embed, file=file),
                                             timeout=10,
                                         )
                                     else:
+                                        content = f"{url} -> {final_url}"
+                                        if domain in SHORTENER_DOMAINS:
+                                            content = f"`{url}` -> {final_url}"
                                         await asyncio.wait_for(
-                                            channel.send(f"{url} -> {final_url}"),
+                                            channel.send(content),
                                             timeout=10,
                                         )
                                 except Exception as e:
