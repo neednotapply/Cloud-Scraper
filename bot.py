@@ -655,7 +655,13 @@ async def fetch_reddit_redirect(
     code: str,
     headers=None,
 ) -> tuple[str, bytes | None] | None:
-    """Return the linked media URL from a Reddit post."""
+    """Return the linked media URL from a Reddit post.
+
+    This will attempt to extract a direct link to any hosted video so that the
+    resulting Discord message can embed the video itself instead of requiring a
+    user to navigate to Reddit. If no direct media can be determined, a normal
+    redirect URL is returned instead.
+    """
     try:
         async with session.get(url, headers=headers, timeout=10, allow_redirects=True) as resp:
             if resp.status != 200:
@@ -731,6 +737,21 @@ async def fetch_reddit_redirect(
             ):
                 logger.info("Checked %s -> not found (no media)", url)
                 return None
+
+            reddit_video = (
+                (post.get("secure_media") or {}).get("reddit_video")
+                or (post.get("media") or {}).get("reddit_video")
+                or (post.get("preview") or {}).get("reddit_video_preview")
+            )
+
+            if reddit_video:
+                video_url = (
+                    reddit_video.get("fallback_url")
+                    or reddit_video.get("scrubber_media_url")
+                    or reddit_video.get("dash_url")
+                )
+                if video_url:
+                    return video_url, None
 
             redirect = post.get("url_overridden_by_dest") or post.get("url")
             if redirect:
@@ -918,6 +939,8 @@ async def scrape_loop():
                                         embed = discord.Embed(url=final_url)
                                         embed.set_image(url="attachment://screenshot.png")
                                         display_host = urlparse(final_url).hostname or final_url
+                                        if domain == "reddit.com" and display_host.endswith("redd.it"):
+                                            display_host = "v.redd.it"
                                         if display_host.startswith("www."):
                                             display_host = display_host[4:]
                                         link = f"[{display_host}]({final_url})"
@@ -928,6 +951,8 @@ async def scrape_loop():
                                         )
                                     else:
                                         display_host = urlparse(final_url).hostname or final_url
+                                        if domain == "reddit.com" and display_host.endswith("redd.it"):
+                                            display_host = "v.redd.it"
                                         if display_host.startswith("www."):
                                             display_host = display_host[4:]
                                         link = f"[{display_host}]({final_url})"
