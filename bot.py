@@ -751,7 +751,21 @@ async def fetch_reddit_redirect(
                     or reddit_video.get("dash_url")
                 )
                 if video_url:
-                    return video_url, None
+                    final_video = video_url
+                    try:
+                        async with session.get(
+                            video_url,
+                            allow_redirects=True,
+                            timeout=10,
+                            headers={"Range": "bytes=0-0"},
+                        ) as vresp:
+                            if vresp.status < 400:
+                                final_video = str(vresp.url)
+                    except Exception as exc:
+                        logger.debug(
+                            "Failed to resolve Reddit video %s: %s", video_url, exc
+                        )
+                    return final_video, None
 
             redirect = post.get("url_overridden_by_dest") or post.get("url")
             if redirect:
