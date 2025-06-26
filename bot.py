@@ -79,14 +79,20 @@ SHORTENER_DOMAINS = {"tinyurl.com", "is.gd", "bit.ly", "rb.gy", "reddit.com"}
 async def capture_page_screenshot(
     browser: Browser, url: str, headers=None
 ) -> bytes | None:
-    """Return a screenshot of the given page using Playwright."""
-    context = await browser.new_context()
+    """Return a screenshot of the given page using Playwright.
+
+    The screenshot is limited to the initial viewport to avoid capturing the
+    entire scrolled page. A 16:9 viewport is used so the resulting image has a
+    consistent aspect ratio.
+    """
+    context = await browser.new_context(viewport={"width": 1280, "height": 720})
     try:
         page = await context.new_page()
         try:
             await page.set_extra_http_headers(headers or {})
             await page.goto(url, timeout=10000, wait_until="domcontentloaded")
-            return await page.screenshot(full_page=True)
+            # Capture only the visible portion of the page
+            return await page.screenshot(full_page=False)
         finally:
             try:
                 await asyncio.shield(page.close())
@@ -653,6 +659,7 @@ async def fetch_shortener_screenshot(
                         or "attention required" in lower
                         or "access denied" in lower
                         or "checking if the site connection is secure" in lower
+                        or "verifying you are human" in lower
                     )
                 ):
                     logger.info("Checked %s -> not found (blocked page)", url)
@@ -993,15 +1000,11 @@ async def scrape_loop():
                                             timeout=10,
                                         )
                                     else:
-                                        host = urlparse(final_url).hostname or ""
-                                        if host in {"youtu.be", "www.youtube.com", "youtube.com"}:
-                                            content = final_url
-                                        else:
-                                            display_host = host
-                                            if display_host.startswith("www."):
-                                                display_host = display_host[4:]
-                                            link = f"[{display_host}]({final_url})"
-                                            content = f"`{url}` -> {link}"
+                                        display_host = urlparse(final_url).hostname or final_url
+                                        if display_host.startswith("www."):
+                                            display_host = display_host[4:]
+                                        link = f"[{display_host}]({final_url})"
+                                        content = f"`{url}` -> {link}"
                                         await asyncio.wait_for(
                                             channel.send(content),
                                             timeout=10,
