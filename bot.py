@@ -638,6 +638,25 @@ async def fetch_shortener_screenshot(
                 if initial_host == "rb.gy" and final_url.startswith("https://free-url-shortener.rb.gy/"):
                     logger.info("Checked %s -> not found (homepage redirect)", url)
                     return None
+                if final_host in {"youtu.be", "www.youtube.com", "youtube.com"}:
+                    return final_url, None
+                text = ""
+                try:
+                    text = await resp.text(errors="ignore")
+                except Exception:
+                    pass
+                lower = text.lower()
+                if (
+                    "cloudflare" in lower
+                    and (
+                        "you have been blocked" in lower
+                        or "attention required" in lower
+                        or "access denied" in lower
+                        or "checking if the site connection is secure" in lower
+                    )
+                ):
+                    logger.info("Checked %s -> not found (blocked page)", url)
+                    return None
                 screenshot = await capture_page_screenshot(browser, final_url, headers=headers)
                 return final_url, screenshot
             logger.info("Checked %s -> HTTP %s", url, resp.status)
@@ -734,6 +753,7 @@ async def fetch_reddit_redirect(
             if not (
                 post.get("post_hint") in {"image", "hosted:video", "rich:video"}
                 or post.get("is_video")
+                or post.get("is_gallery")
             ):
                 logger.info("Checked %s -> not found (no media)", url)
                 return None
@@ -766,6 +786,17 @@ async def fetch_reddit_redirect(
                             "Failed to resolve Reddit video %s: %s", video_url, exc
                         )
                     return final_video, None
+
+            if post.get("is_gallery"):
+                items = (post.get("gallery_data") or {}).get("items") or []
+                if items:
+                    first_id = items[0].get("media_id")
+                    meta = (post.get("media_metadata") or {}).get(first_id) or {}
+                    img_url = (meta.get("s") or {}).get("u")
+                    if not img_url and meta.get("p"):
+                        img_url = meta["p"][-1].get("u")
+                    if img_url:
+                        return html.unescape(img_url), None
 
             redirect = post.get("url_overridden_by_dest") or post.get("url")
             if redirect:
@@ -953,8 +984,6 @@ async def scrape_loop():
                                         embed = discord.Embed(url=final_url)
                                         embed.set_image(url="attachment://screenshot.png")
                                         display_host = urlparse(final_url).hostname or final_url
-                                        if domain == "reddit.com" and display_host.endswith("redd.it"):
-                                            display_host = "v.redd.it"
                                         if display_host.startswith("www."):
                                             display_host = display_host[4:]
                                         link = f"[{display_host}]({final_url})"
@@ -964,13 +993,15 @@ async def scrape_loop():
                                             timeout=10,
                                         )
                                     else:
-                                        display_host = urlparse(final_url).hostname or final_url
-                                        if domain == "reddit.com" and display_host.endswith("redd.it"):
-                                            display_host = "v.redd.it"
-                                        if display_host.startswith("www."):
-                                            display_host = display_host[4:]
-                                        link = f"[{display_host}]({final_url})"
-                                        content = f"`{url}` -> {link}"
+                                        host = urlparse(final_url).hostname or ""
+                                        if host in {"youtu.be", "www.youtube.com", "youtube.com"}:
+                                            content = final_url
+                                        else:
+                                            display_host = host
+                                            if display_host.startswith("www."):
+                                                display_host = display_host[4:]
+                                            link = f"[{display_host}]({final_url})"
+                                            content = f"`{url}` -> {link}"
                                         await asyncio.wait_for(
                                             channel.send(content),
                                             timeout=10,
