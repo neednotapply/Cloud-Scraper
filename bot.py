@@ -37,19 +37,18 @@ DOMAINS = {
     "i.imgur.com": {"base_url": "https://i.imgur.com", "length": 7, "rate_limit": 1.0, "weight": 1.0},
     "cl.ly": {"base_url": "https://cl.ly", "length": 6, "rate_limit": 1.0, "weight": 1.0},
     "prnt.sc": {"base_url": "https://prnt.sc", "length": 6, "rate_limit": 1.0, "weight": 1.0},
-    "youtu.be": {"base_url": "https://www.youtube.com/watch", "length": 11, "rate_limit": 1.0, "weight": 1.0},
+    "youtu.be": {"base_url": "https://youtu.be", "length": 11, "rate_limit": 1.0, "weight": 1.0},
     "vgy.me": {"base_url": "https://vgy.me", "length": 5, "rate_limit": 1.0, "weight": 1.0},
-    "catbox.moe": {
-        "base_url": "https://files.catbox.moe",
-        "length": 6,
-        "rate_limit": 1.0,
-        "extensions": ["jpg", "jpeg", "png", "gif", "webp"],
-        "weight": 1.0,
-    },
     "tinyurl.com": {"base_url": "https://tinyurl.com", "length": 6, "rate_limit": 1.0, "weight": 1.0},
     "is.gd": {"base_url": "https://is.gd", "length": 6, "rate_limit": 1.0, "weight": 1.0},
     "bit.ly": {"base_url": "https://bit.ly", "length": 7, "rate_limit": 1.0, "weight": 1.0},
     "rb.gy": {"base_url": "https://rb.gy", "length": 6, "rate_limit": 1.0, "weight": 1.0},
+    "zoom.us": {"base_url": "https://zoom.us/j", "length": [9, 11], "rate_limit": 1.0, "weight": 1.0},
+    "gotomeet.me": {"base_url": "https://gotomeet.me", "length": 9, "rate_limit": 1.0, "weight": 1.0},
+    "webex.com": {"base_url": "https://webex.com/meet", "length": [9, 11], "rate_limit": 1.0, "weight": 1.0},
+    "meet.chime.in": {"base_url": "https://meet.chime.in", "length": 10, "rate_limit": 1.0, "weight": 1.0},
+    "discord.gg": {"base_url": "https://discord.gg", "length": [7, 8, 9, 10], "rate_limit": 1.0, "weight": 1.0},
+    "meet.google.com": {"base_url": "https://meet.google.com", "length": 10, "rate_limit": 2.0, "weight": 1.0},
     "pastebin.com": {"base_url": "https://pastebin.com", "length": 8, "rate_limit": 1.0, "weight": 1.0},
     # Use non-www host so Reddit links we send match the canonical form
     "reddit.com": {
@@ -65,11 +64,19 @@ DOMAINS = {
 DOMAIN_WEIGHTS = {domain: cfg.get("weight", 1.0) for domain, cfg in DOMAINS.items()}
 WEIGHT_INCREASE = 0.1  # Applied when a link is valid
 WEIGHT_DECREASE = 0.01  # Applied when a link is invalid
-MAX_DOMAIN_WEIGHT = 10.0
+MAX_DOMAIN_WEIGHT = 5.0
 
 # Domains that host text rather than images. For these we simply verify that a
 # page exists and send the link without attempting to embed an image.
-TEXT_DOMAINS = {"pastebin.com"}
+TEXT_DOMAINS = {
+    "pastebin.com",
+    "zoom.us",
+    "gotomeet.me",
+    "webex.com",
+    "meet.chime.in",
+    "discord.gg",
+    "meet.google.com",
+}
 
 # URL shortener domains. These are considered valid if they redirect to a
 # different domain without returning a 404.
@@ -213,8 +220,12 @@ def _apply_heuristics(domain: str, charset: str, length: int) -> str:
     elif domain == "reddit.com":
         # Reddit post IDs are base36: digits and lowercase letters in any order
         result = string.digits + string.ascii_lowercase
-    elif domain == "catbox.moe":
-        result = string.ascii_lowercase + string.digits
+    elif domain in {"zoom.us", "gotomeet.me", "webex.com", "meet.chime.in"}:
+        result = string.digits
+    elif domain == "discord.gg":
+        result = string.ascii_letters + string.digits
+    elif domain == "meet.google.com":
+        result = string.ascii_lowercase
     elif domain == "youtu.be":
         result = string.ascii_letters + string.digits + "-_"
     logger.debug("Heuristics result for %s: %s", domain, result)
@@ -825,12 +836,17 @@ SCRAPER_MAP = {
     "prnt.sc": lambda browser, session, url, code, headers: fetch_prntsc_image(browser, session, url, headers=headers),
     "youtu.be": check_youtube_video,
     "vgy.me": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
-    "catbox.moe": lambda browser, session, url, code, headers: fetch_image(session, url, headers=headers),
     "tinyurl.com": fetch_shortener_screenshot,
     "is.gd": fetch_shortener_screenshot,
     "bit.ly": fetch_shortener_screenshot,
     "rb.gy": fetch_shortener_screenshot,
     "pastebin.com": check_text_page,
+    "zoom.us": check_text_page,
+    "gotomeet.me": check_text_page,
+    "webex.com": check_text_page,
+    "meet.chime.in": check_text_page,
+    "discord.gg": check_text_page,
+    "meet.google.com": check_text_page,
     "reddit.com": fetch_reddit_redirect,
 }
 
@@ -858,7 +874,11 @@ async def scrape_loop():
                         domain = choose_domain()
                         settings = DOMAINS[domain]
                         base_url = settings["base_url"]
-                        length = settings.get("length", 6)
+                        length_setting = settings.get("length", 6)
+                        if isinstance(length_setting, (list, tuple)):
+                            length = random.choice(length_setting)
+                        else:
+                            length = length_setting
                         rate_limit = settings.get("rate_limit", 1.0)
                         logger.debug(
                             "Domain selected: %s length=%d rate_limit=%s",
@@ -871,13 +891,13 @@ async def scrape_loop():
                         headers = None
                         code = generate_code(domain, length, charset)
                         logger.debug("Generated code for %s: %s", domain, code)
-                        if domain == "youtu.be":
-                            url = f"{base_url}?v={code}"
+                        if domain == "meet.google.com":
+                            formatted = f"{code[:3]}-{code[3:7]}-{code[7:]}"
+                            url = f"{base_url}/{formatted}"
+                        elif domain == "youtu.be":
+                            url = f"{base_url}/{code}"
                         else:
                             url = f"{base_url}/{code}"
-                            if domain == "catbox.moe":
-                                ext = random.choice(settings.get("extensions", ["png"]))
-                                url = f"{url}.{ext}"
                         if url in tested_urls:
                             await asyncio.sleep(0)
                             continue
