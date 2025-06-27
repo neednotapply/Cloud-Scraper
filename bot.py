@@ -44,7 +44,10 @@ DOMAINS = {
     "bit.ly": {"base_url": "https://bit.ly", "length": 7, "rate_limit": 1.0, "weight": 1.0},
     "rb.gy": {"base_url": "https://rb.gy", "length": 6, "rate_limit": 1.0, "weight": 1.0},
     "zoom.us": {"base_url": "https://zoom.us/j", "length": [9, 11], "rate_limit": 1.0, "weight": 1.0},
-    "gotomeet.me": {"base_url": "https://app.gotomeet.me", "length": 9, "rate_limit": 1.0, "weight": 1.0},
+    # GoTo Meeting uses an "app.goto.com/meeting" base URL but accepts the
+    # traditional "gotomeet.me" domain. Using the full meeting path ensures
+    # the link resolves correctly.
+    "gotomeet.me": {"base_url": "https://app.goto.com/meeting", "length": 9, "rate_limit": 1.0, "weight": 1.0},
     "webex.com": {"base_url": "https://webex.com/meet", "length": [9, 11], "rate_limit": 1.0, "weight": 1.0},
     "meet.chime.in": {"base_url": "https://meet.chime.in", "length": 10, "rate_limit": 1.0, "weight": 1.0},
     "discord.gg": {"base_url": "https://discord.gg", "length": [7, 8, 9, 10], "rate_limit": 1.0, "weight": 1.0},
@@ -642,21 +645,44 @@ async def check_discord_invite(
     code: str,
     headers=None,
 ) -> str | None:
-    """Validate a Discord invite by checking for an expiration message."""
+    """Validate a Discord invite by waiting for the page to fully resolve."""
+    context = await browser.new_context()
     try:
-        async with session.get(url, headers=headers, timeout=10, allow_redirects=True) as resp:
-            final_url = str(resp.url)
-            text = await resp.text(errors="ignore")
-            if resp.status == 200:
-                if "This invite may be expired" in text:
-                    logger.info("Checked %s -> not found (invite expired)", url)
-                    return None
-                return final_url
-            logger.info("Checked %s -> HTTP %s", url, resp.status)
+        page = await context.new_page()
+        try:
+            await page.set_extra_http_headers(headers or {})
+            await page.goto(url, timeout=10000, wait_until="domcontentloaded")
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+
+            content = await page.content()
+            if (
+                "Discord App Launched" in content
+                or "What should everyone call you?" in content
+                or await page.locator(
+                    'input[placeholder="What should everyone call you?"][maxlength="999"]'
+                ).count()
+                > 0
+            ):
+                return str(page.url)
+
+            if "This invite may be expired" in content:
+                logger.info("Checked %s -> not found (invite expired)", url)
+            else:
+                logger.info("Checked %s -> not found (invalid invite)", url)
+        finally:
+            try:
+                await asyncio.shield(page.close())
+            except Exception as exc:
+                logger.warning("Failed to close Discord page %s: %s", url, exc)
     except asyncio.TimeoutError:
         logger.warning("Checked %s -> not found (timeout)", url)
     except Exception as exc:
         logger.warning("Checked %s -> error: %s", url, exc)
+    finally:
+        await context.close()
     return None
 
 
