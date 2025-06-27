@@ -18,15 +18,22 @@ The bot has a built-in list of supported services so no additional configuration
 | imgur.com / i.imgur.com | 7 |
 | cl.ly | 6 |
 | prnt.sc | 6 |
-| youtu.be | 11 (checked via `https://www.youtube.com/watch?v=CODE`) |
+| youtu.be | 11 (direct link `https://youtu.be/CODE`) |
 | vgy.me | 5 |
-| catbox.moe | 6 |
 | tinyurl.com | 6 |
 | is.gd | 6 |
 | bit.ly | 7 |
 | rb.gy | 6 |
+| zoom.us | 9 or 11 digits |
+| gotomeet.me | 9 digits |
+| webex.com | 9–11 digits |
+| meet.chime.in | 10 digits |
+| discord.gg | 7–10 characters |
+| meet.google.com | 10 letters (formatted as `abc-defg-hij`) |
 | pastebin.com | 8 |
 | reddit.com | 6 (posts parsed for media link) |
+
+Google Meet enforces rate limiting, so the bot waits longer between requests when testing this domain.
 
 Reddit posts are treated like redirects to the linked image or video.
 
