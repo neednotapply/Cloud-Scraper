@@ -44,7 +44,7 @@ DOMAINS = {
     "bit.ly": {"base_url": "https://bit.ly", "length": 7, "rate_limit": 1.0, "weight": 1.0},
     "rb.gy": {"base_url": "https://rb.gy", "length": 6, "rate_limit": 1.0, "weight": 1.0},
     "zoom.us": {"base_url": "https://zoom.us/j", "length": [9, 11], "rate_limit": 1.0, "weight": 1.0},
-    "gotomeet.me": {"base_url": "https://gotomeet.me", "length": 9, "rate_limit": 1.0, "weight": 1.0},
+    "gotomeet.me": {"base_url": "https://app.gotomeet.me", "length": 9, "rate_limit": 1.0, "weight": 1.0},
     "webex.com": {"base_url": "https://webex.com/meet", "length": [9, 11], "rate_limit": 1.0, "weight": 1.0},
     "meet.chime.in": {"base_url": "https://meet.chime.in", "length": 10, "rate_limit": 1.0, "weight": 1.0},
     "discord.gg": {"base_url": "https://discord.gg", "length": [7, 8, 9, 10], "rate_limit": 1.0, "weight": 1.0},
@@ -635,6 +635,80 @@ async def check_text_page(
     return None
 
 
+async def check_discord_invite(
+    browser: Browser,
+    session: aiohttp.ClientSession,
+    url: str,
+    code: str,
+    headers=None,
+) -> str | None:
+    """Validate a Discord invite by checking for an expiration message."""
+    try:
+        async with session.get(url, headers=headers, timeout=10, allow_redirects=True) as resp:
+            final_url = str(resp.url)
+            text = await resp.text(errors="ignore")
+            if resp.status == 200:
+                if "This invite may be expired" in text:
+                    logger.info("Checked %s -> not found (invite expired)", url)
+                    return None
+                return final_url
+            logger.info("Checked %s -> HTTP %s", url, resp.status)
+    except asyncio.TimeoutError:
+        logger.warning("Checked %s -> not found (timeout)", url)
+    except Exception as exc:
+        logger.warning("Checked %s -> error: %s", url, exc)
+    return None
+
+
+async def check_google_meet(
+    browser: Browser,
+    session: aiohttp.ClientSession,
+    url: str,
+    code: str,
+    headers=None,
+) -> str | None:
+    """Validate a Google Meet code by ensuring it doesn't redirect to an unsupported page."""
+    try:
+        async with session.get(url, headers=headers, timeout=10, allow_redirects=True) as resp:
+            final_url = str(resp.url)
+            if "unsupported?meetingCode" in final_url:
+                logger.info("Checked %s -> not found (unsupported)", url)
+                return None
+            if resp.status == 200:
+                return final_url
+            logger.info("Checked %s -> HTTP %s", url, resp.status)
+    except asyncio.TimeoutError:
+        logger.warning("Checked %s -> not found (timeout)", url)
+    except Exception as exc:
+        logger.warning("Checked %s -> error: %s", url, exc)
+    return None
+
+
+async def check_gotomeet(
+    browser: Browser,
+    session: aiohttp.ClientSession,
+    url: str,
+    code: str,
+    headers=None,
+) -> str | None:
+    """Validate a GoToMeeting invite by detecting error text."""
+    try:
+        async with session.get(url, headers=headers, timeout=10, allow_redirects=True) as resp:
+            final_url = str(resp.url)
+            text = await resp.text(errors="ignore")
+            if resp.status == 200:
+                if "Couldn't find that meeting" in text:
+                    logger.info("Checked %s -> not found (invalid meeting)", url)
+                    return None
+                return final_url
+            logger.info("Checked %s -> HTTP %s", url, resp.status)
+    except asyncio.TimeoutError:
+        logger.warning("Checked %s -> not found (timeout)", url)
+    except Exception as exc:
+        logger.warning("Checked %s -> error: %s", url, exc)
+    return None
+
+
 async def fetch_shortener_screenshot(
     browser: Browser,
     session: aiohttp.ClientSession,
@@ -842,11 +916,11 @@ SCRAPER_MAP = {
     "rb.gy": fetch_shortener_screenshot,
     "pastebin.com": check_text_page,
     "zoom.us": check_text_page,
-    "gotomeet.me": check_text_page,
+    "gotomeet.me": check_gotomeet,
     "webex.com": check_text_page,
     "meet.chime.in": check_text_page,
-    "discord.gg": check_text_page,
-    "meet.google.com": check_text_page,
+    "discord.gg": check_discord_invite,
+    "meet.google.com": check_google_meet,
     "reddit.com": fetch_reddit_redirect,
 }
 

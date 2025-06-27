@@ -25,7 +25,7 @@ The bot has a built-in list of supported services so no additional configuration
 | bit.ly | 7 |
 | rb.gy | 6 |
 | zoom.us | 9 or 11 digits |
-| gotomeet.me | 9 digits |
+| app.gotomeet.me | 9 digits |
 | webex.com | 9–11 digits |
 | meet.chime.in | 10 digits |
 | discord.gg | 7–10 characters |
