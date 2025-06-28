@@ -778,7 +778,12 @@ async def check_zoom(
             # Allow additional time for any client-side redirects
             await page.wait_for_timeout(2000)
 
-            if await page.locator('text="This meeting link is invalid"').count() > 0:
+            if (
+                await page.locator(
+                    'span.error-message:has-text("This meeting link is invalid")'
+                ).count()
+                > 0
+            ):
                 logger.info("Checked %s -> not found (invalid meeting)", url)
                 return None
 
@@ -1057,7 +1062,7 @@ async def scrape_loop():
                             formatted = f"{code[:3]}-{code[3:7]}-{code[7:]}"
                             url = f"{base_url}/{formatted}"
                         elif domain == "zoom.us":
-                            url = f"{base_url}/{code}/join?fromPWA=1"
+                            url = f"{base_url}/{code}/join"
                         elif domain == "youtu.be":
                             url = f"{base_url}/{code}"
                         else:
