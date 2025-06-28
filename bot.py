@@ -658,9 +658,11 @@ async def check_discord_invite(
             await page.set_extra_http_headers(headers or {})
             await page.goto(url, timeout=10000, wait_until="domcontentloaded")
             try:
-                await page.wait_for_load_state("networkidle", timeout=5000)
+                await page.wait_for_load_state("networkidle", timeout=10000)
             except Exception:
                 pass
+            # Allow additional time for any client-side redirects
+            await page.wait_for_timeout(2000)
 
             content = await page.content()
             if (
@@ -730,9 +732,11 @@ async def check_gotomeet(
             await page.set_extra_http_headers(headers or {})
             await page.goto(url, timeout=10000, wait_until="domcontentloaded")
             try:
-                await page.wait_for_load_state("networkidle", timeout=5000)
+                await page.wait_for_load_state("networkidle", timeout=10000)
             except Exception:
                 pass
+            # Allow additional time for any client-side redirects
+            await page.wait_for_timeout(2000)
 
             if await page.locator('text="Couldn\'t find that meeting"').count() > 0:
                 logger.info("Checked %s -> not found (invalid meeting)", url)
@@ -768,9 +772,11 @@ async def check_zoom(
             await page.set_extra_http_headers(headers or {})
             await page.goto(url, timeout=10000, wait_until="domcontentloaded")
             try:
-                await page.wait_for_load_state("networkidle", timeout=5000)
+                await page.wait_for_load_state("networkidle", timeout=10000)
             except Exception:
                 pass
+            # Allow additional time for any client-side redirects
+            await page.wait_for_timeout(2000)
 
             if await page.locator('text="This meeting link is invalid"').count() > 0:
                 logger.info("Checked %s -> not found (invalid meeting)", url)
