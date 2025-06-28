@@ -43,7 +43,12 @@ DOMAINS = {
     "is.gd": {"base_url": "https://is.gd", "length": 6, "rate_limit": 1.0, "weight": 1.0},
     "bit.ly": {"base_url": "https://bit.ly", "length": 7, "rate_limit": 1.0, "weight": 1.0},
     "rb.gy": {"base_url": "https://rb.gy", "length": 6, "rate_limit": 1.0, "weight": 1.0},
-    "zoom.us": {"base_url": "https://zoom.us/j", "length": [9, 11], "rate_limit": 1.0, "weight": 1.0},
+    "zoom.us": {
+        "base_url": "https://app.zoom.us/wc",
+        "length": [9, 11],
+        "rate_limit": 1.0,
+        "weight": 1.0,
+    },
     # GoTo Meeting uses an "app.goto.com/meeting" base URL but accepts the
     # traditional "gotomeet.me" domain. Using the full meeting path ensures
     # the link resolves correctly.
@@ -717,21 +722,72 @@ async def check_gotomeet(
     code: str,
     headers=None,
 ) -> str | None:
-    """Validate a GoToMeeting invite by detecting error text."""
+    """Validate a GoToMeeting invite by waiting for the page to fully resolve."""
+    context = await browser.new_context()
     try:
-        async with session.get(url, headers=headers, timeout=10, allow_redirects=True) as resp:
-            final_url = str(resp.url)
-            text = await resp.text(errors="ignore")
-            if resp.status == 200:
-                if "Couldn't find that meeting" in text:
-                    logger.info("Checked %s -> not found (invalid meeting)", url)
-                    return None
-                return final_url
-            logger.info("Checked %s -> HTTP %s", url, resp.status)
+        page = await context.new_page()
+        try:
+            await page.set_extra_http_headers(headers or {})
+            await page.goto(url, timeout=10000, wait_until="domcontentloaded")
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+
+            if await page.locator('text="Couldn\'t find that meeting"').count() > 0:
+                logger.info("Checked %s -> not found (invalid meeting)", url)
+                return None
+
+            return str(page.url)
+        finally:
+            try:
+                await asyncio.shield(page.close())
+            except Exception as exc:
+                logger.warning("Failed to close GoToMeeting page %s: %s", url, exc)
     except asyncio.TimeoutError:
         logger.warning("Checked %s -> not found (timeout)", url)
     except Exception as exc:
         logger.warning("Checked %s -> error: %s", url, exc)
+    finally:
+        await context.close()
+    return None
+
+
+async def check_zoom(
+    browser: Browser,
+    session: aiohttp.ClientSession,
+    url: str,
+    code: str,
+    headers=None,
+) -> str | None:
+    """Validate a Zoom meeting link by waiting for the page to settle."""
+    context = await browser.new_context()
+    try:
+        page = await context.new_page()
+        try:
+            await page.set_extra_http_headers(headers or {})
+            await page.goto(url, timeout=10000, wait_until="domcontentloaded")
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+
+            if await page.locator('text="This meeting link is invalid"').count() > 0:
+                logger.info("Checked %s -> not found (invalid meeting)", url)
+                return None
+
+            return str(page.url)
+        finally:
+            try:
+                await asyncio.shield(page.close())
+            except Exception as exc:
+                logger.warning("Failed to close Zoom page %s: %s", url, exc)
+    except asyncio.TimeoutError:
+        logger.warning("Checked %s -> not found (timeout)", url)
+    except Exception as exc:
+        logger.warning("Checked %s -> error: %s", url, exc)
+    finally:
+        await context.close()
     return None
 
 
@@ -941,7 +997,7 @@ SCRAPER_MAP = {
     "bit.ly": fetch_shortener_screenshot,
     "rb.gy": fetch_shortener_screenshot,
     "pastebin.com": check_text_page,
-    "zoom.us": check_text_page,
+    "zoom.us": check_zoom,
     "gotomeet.me": check_gotomeet,
     "webex.com": check_text_page,
     "meet.chime.in": check_text_page,
@@ -994,6 +1050,8 @@ async def scrape_loop():
                         if domain == "meet.google.com":
                             formatted = f"{code[:3]}-{code[3:7]}-{code[7:]}"
                             url = f"{base_url}/{formatted}"
+                        elif domain == "zoom.us":
+                            url = f"{base_url}/{code}/join?fromPWA=1"
                         elif domain == "youtu.be":
                             url = f"{base_url}/{code}"
                         else:
