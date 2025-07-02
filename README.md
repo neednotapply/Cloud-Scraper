@@ -1,6 +1,6 @@
 # Filebox Search
 
-This bot attempts to discover public images hosted on [imgBB](https://imgbb.com) by generating random short codes and checking if an image exists.
+This bot attempts to discover publicly accessible media by generating random short codes for a variety of hosting services and checking which links are valid. Any discovered content is posted to a Discord channel.
 
 ## Configuration
 
@@ -24,7 +24,6 @@ The bot has a built-in list of supported services so no additional configuration
 | is.gd | 6 |
 | bit.ly | 7 |
 | rb.gy | 6 |
-| zoom.us | 9 or 11 digits |
 | app.goto.com/meeting | 9 digits |
 | webex.com | 9–11 digits |
 | meet.chime.in | 10 digits |

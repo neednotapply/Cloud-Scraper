@@ -43,12 +43,6 @@ DOMAINS = {
     "is.gd": {"base_url": "https://is.gd", "length": 6, "rate_limit": 1.0, "weight": 1.0},
     "bit.ly": {"base_url": "https://bit.ly", "length": 7, "rate_limit": 1.0, "weight": 1.0},
     "rb.gy": {"base_url": "https://rb.gy", "length": 6, "rate_limit": 1.0, "weight": 1.0},
-    "zoom.us": {
-        "base_url": "https://app.zoom.us/wc",
-        "length": [9, 11],
-        "rate_limit": 1.0,
-        "weight": 1.0,
-    },
     # GoTo Meeting uses an "app.goto.com/meeting" base URL but accepts the
     # traditional "gotomeet.me" domain. Using the full meeting path ensures
     # the link resolves correctly.
@@ -78,7 +72,6 @@ MAX_DOMAIN_WEIGHT = 5.0
 # page exists and send the link without attempting to embed an image.
 TEXT_DOMAINS = {
     "pastebin.com",
-    "zoom.us",
     "gotomeet.me",
     "webex.com",
     "meet.chime.in",
@@ -228,7 +221,7 @@ def _apply_heuristics(domain: str, charset: str, length: int) -> str:
     elif domain == "reddit.com":
         # Reddit post IDs are base36: digits and lowercase letters in any order
         result = string.digits + string.ascii_lowercase
-    elif domain in {"zoom.us", "gotomeet.me", "webex.com", "meet.chime.in"}:
+    elif domain in {"gotomeet.me", "webex.com", "meet.chime.in"}:
         result = string.digits
     elif domain == "discord.gg":
         result = string.ascii_letters + string.digits
@@ -757,58 +750,6 @@ async def check_gotomeet(
     return None
 
 
-async def check_zoom(
-    browser: Browser,
-    session: aiohttp.ClientSession,
-    url: str,
-    code: str,
-    headers=None,
-) -> str | None:
-    """Validate a Zoom meeting link by waiting for the page to settle."""
-    context = await browser.new_context()
-    try:
-        page = await context.new_page()
-        try:
-            await page.set_extra_http_headers(headers or {})
-            await page.goto(url, timeout=10000, wait_until="domcontentloaded")
-            try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
-            except Exception:
-                pass
-            # Allow additional time for any client-side redirects
-            await page.wait_for_timeout(2000)
-
-            invalid = await page.locator(
-                'span.error-message:has-text("This meeting link is invalid")'
-            ).count() > 0
-            if not invalid:
-                for frame in page.frames:
-                    if (
-                        await frame.locator(
-                            'span.error-message:has-text("This meeting link is invalid")'
-                        ).count()
-                        > 0
-                    ):
-                        invalid = True
-                        break
-            if invalid:
-                logger.info("Checked %s -> not found (invalid meeting)", url)
-                return None
-
-            return str(page.url)
-        finally:
-            try:
-                await asyncio.shield(page.close())
-            except Exception as exc:
-                logger.warning("Failed to close Zoom page %s: %s", url, exc)
-    except asyncio.TimeoutError:
-        logger.warning("Checked %s -> not found (timeout)", url)
-    except Exception as exc:
-        logger.warning("Checked %s -> error: %s", url, exc)
-    finally:
-        await context.close()
-    return None
-
 
 async def fetch_shortener_screenshot(
     browser: Browser,
@@ -1016,7 +957,6 @@ SCRAPER_MAP = {
     "bit.ly": fetch_shortener_screenshot,
     "rb.gy": fetch_shortener_screenshot,
     "pastebin.com": check_text_page,
-    "zoom.us": check_zoom,
     "gotomeet.me": check_gotomeet,
     "webex.com": check_text_page,
     "meet.chime.in": check_text_page,
@@ -1069,8 +1009,6 @@ async def scrape_loop():
                         if domain == "meet.google.com":
                             formatted = f"{code[:3]}-{code[3:7]}-{code[7:]}"
                             url = f"{base_url}/{formatted}"
-                        elif domain == "zoom.us":
-                            url = f"{base_url}/{code}/join"
                         elif domain == "youtu.be":
                             url = f"{base_url}/{code}"
                         else:
