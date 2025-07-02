@@ -778,12 +778,20 @@ async def check_zoom(
             # Allow additional time for any client-side redirects
             await page.wait_for_timeout(2000)
 
-            if (
-                await page.locator(
-                    'span.error-message:has-text("This meeting link is invalid")'
-                ).count()
-                > 0
-            ):
+            invalid = await page.locator(
+                'span.error-message:has-text("This meeting link is invalid")'
+            ).count() > 0
+            if not invalid:
+                for frame in page.frames:
+                    if (
+                        await frame.locator(
+                            'span.error-message:has-text("This meeting link is invalid")'
+                        ).count()
+                        > 0
+                    ):
+                        invalid = True
+                        break
+            if invalid:
                 logger.info("Checked %s -> not found (invalid meeting)", url)
                 return None
 
