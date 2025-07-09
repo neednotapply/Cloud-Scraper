@@ -31,14 +31,7 @@ CHANNEL_ID = int(config.get("channel_id", 0))
 
 # Built-in domain configuration
 DOMAINS = {
-    "ibb.co": {"base_url": "https://ibb.co", "length": 8, "rate_limit": 1.0, "weight": 1.0},
-    "puu.sh": {"base_url": "https://puu.sh", "length": 6, "rate_limit": 1.0, "weight": 1.0},
-    "imgur.com": {"base_url": "https://imgur.com", "length": 7, "rate_limit": 1.0, "weight": 1.0},
-    "i.imgur.com": {"base_url": "https://i.imgur.com", "length": 7, "rate_limit": 1.0, "weight": 1.0},
-    "cl.ly": {"base_url": "https://cl.ly", "length": 6, "rate_limit": 1.0, "weight": 1.0},
     "prnt.sc": {"base_url": "https://prnt.sc", "length": 6, "rate_limit": 1.0, "weight": 1.0},
-    "youtu.be": {"base_url": "https://youtu.be", "length": 11, "rate_limit": 1.0, "weight": 1.0},
-    "vgy.me": {"base_url": "https://vgy.me", "length": 5, "rate_limit": 1.0, "weight": 1.0},
     "tinyurl.com": {"base_url": "https://tinyurl.com", "length": 6, "rate_limit": 1.0, "weight": 1.0},
     "is.gd": {"base_url": "https://is.gd", "length": 6, "rate_limit": 1.0, "weight": 1.0},
     "bit.ly": {"base_url": "https://bit.ly", "length": 7, "rate_limit": 1.0, "weight": 1.0},
@@ -47,11 +40,6 @@ DOMAINS = {
     # traditional "gotomeet.me" domain. Using the full meeting path ensures
     # the link resolves correctly.
     "gotomeet.me": {"base_url": "https://app.goto.com/meeting", "length": 9, "rate_limit": 1.0, "weight": 1.0},
-    "webex.com": {"base_url": "https://webex.com/meet", "length": [9, 11], "rate_limit": 1.0, "weight": 1.0},
-    "meet.chime.in": {"base_url": "https://meet.chime.in", "length": 10, "rate_limit": 1.0, "weight": 1.0},
-    "discord.gg": {"base_url": "https://discord.gg", "length": [7, 8, 9, 10], "rate_limit": 1.0, "weight": 1.0},
-    "meet.google.com": {"base_url": "https://meet.google.com", "length": 10, "rate_limit": 2.0, "weight": 1.0},
-    "pastebin.com": {"base_url": "https://pastebin.com", "length": 8, "rate_limit": 1.0, "weight": 1.0},
     # Use non-www host so Reddit links we send match the canonical form
     "reddit.com": {
         "base_url": "https://reddit.com/comments",
@@ -60,6 +48,8 @@ DOMAINS = {
         "weight": 1.0,
     },
 }
+
+
 
 # Weight configuration for each domain used to bias selection.
 # These values are adjusted at runtime based on valid/invalid results.
@@ -70,18 +60,17 @@ MAX_DOMAIN_WEIGHT = 5.0
 
 # Domains that host text rather than images. For these we simply verify that a
 # page exists and send the link without attempting to embed an image.
-TEXT_DOMAINS = {
-    "pastebin.com",
-    "gotomeet.me",
-    "webex.com",
-    "meet.chime.in",
-    "discord.gg",
-    "meet.google.com",
-}
+TEXT_DOMAINS: set[str] = {"gotomeet.me"}
 
 # URL shortener domains. These are considered valid if they redirect to a
 # different domain without returning a 404.
-SHORTENER_DOMAINS = {"tinyurl.com", "is.gd", "bit.ly", "rb.gy", "reddit.com"}
+SHORTENER_DOMAINS = {
+    "tinyurl.com",
+    "is.gd",
+    "bit.ly",
+    "rb.gy",
+    "reddit.com",
+} & set(DOMAINS.keys())
 
 
 async def capture_page_screenshot(
@@ -118,27 +107,35 @@ logger = logging.getLogger("bot")
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
-scrape_task = None
+
+scrape_tasks: list[asyncio.Task] = []
+
+# Number of concurrent scraping workers to run. This can also be overridden
+# via the SCRAPE_WORKERS environment variable.
+SCRAPE_WORKERS = int(os.environ.get("SCRAPE_WORKERS", "1"))
+
+tested_urls = set()
+tested_lock = asyncio.Lock()
+save_lock = asyncio.Lock()
 
 async def start_scrape_loop() -> None:
-    """Ensure the scraping task is running and previous instances are closed."""
-    global scrape_task
-    if scrape_task is not None:
-        if not scrape_task.done():
-            logger.info("Cancelling existing scrape_loop task")
-            scrape_task.cancel()
+    """Ensure scraping workers are running and previous instances are closed."""
+    global scrape_tasks
+    if scrape_tasks:
+        logger.info("Cancelling existing scrape_loop tasks")
+        for task in scrape_tasks:
+            if not task.done():
+                task.cancel()
+        for task in scrape_tasks:
             try:
-                await scrape_task
+                await task
             except asyncio.CancelledError:
-                logger.info("Previous scrape_loop task cancelled")
-        else:
-            exc = scrape_task.exception()
-            if exc:
-                logger.error("scrape_loop exited with exception: %s", exc)
-            else:
-                logger.info("scrape_loop completed")
-    logger.info("Starting scrape_loop task")
-    scrape_task = client.loop.create_task(scrape_loop())
+                pass
+    scrape_tasks = []
+    logger.info("Starting %d scrape_loop workers", SCRAPE_WORKERS)
+    for i in range(SCRAPE_WORKERS):
+        task = client.loop.create_task(scrape_loop(worker_id=i))
+        scrape_tasks.append(task)
 
 
 @client.event
@@ -152,8 +149,6 @@ async def on_ready():
 async def on_resumed():
     logger.info("Gateway resumed")
     await start_scrape_loop()
-
-tested_urls = set()
 
 code_distributions: dict[str, dict[int, list[Counter]]] = defaultdict(lambda: defaultdict(list))
 position_category_stats: dict[str, dict[int, list[Counter]]] = defaultdict(lambda: defaultdict(list))
@@ -214,21 +209,13 @@ def _apply_heuristics(domain: str, charset: str, length: int) -> str:
             result = string.ascii_lowercase
         else:
             result = string.ascii_letters + string.digits
-    elif domain in {"ibb.co", "puu.sh", "imgur.com", "i.imgur.com", "cl.ly", "vgy.me", "tinyurl.com", "is.gd", "bit.ly", "rb.gy"}:
+    elif domain in {"tinyurl.com", "is.gd", "bit.ly", "rb.gy"}:
         result = string.ascii_letters + string.digits
-    elif domain == "pastebin.com":
-        result = ''.join(ch for ch in (string.ascii_letters + string.digits) if ch not in "0OlI")
     elif domain == "reddit.com":
         # Reddit post IDs are base36: digits and lowercase letters in any order
         result = string.digits + string.ascii_lowercase
-    elif domain in {"gotomeet.me", "webex.com", "meet.chime.in"}:
+    elif domain == "gotomeet.me":
         result = string.digits
-    elif domain == "discord.gg":
-        result = string.ascii_letters + string.digits
-    elif domain == "meet.google.com":
-        result = string.ascii_lowercase
-    elif domain == "youtu.be":
-        result = string.ascii_letters + string.digits + "-_"
     logger.debug("Heuristics result for %s: %s", domain, result)
     return result
 
@@ -944,30 +931,18 @@ async def fetch_reddit_redirect(
     return None
 
 SCRAPER_MAP = {
-    "ibb.co": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
-    "puu.sh": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
-    "imgur.com": lambda browser, session, url, code, headers: fetch_imgur_image(session, url, headers=headers),
-    "i.imgur.com": lambda browser, session, url, code, headers: fetch_imgur_image(session, url, headers=headers),
-    "cl.ly": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "prnt.sc": lambda browser, session, url, code, headers: fetch_prntsc_image(browser, session, url, headers=headers),
-    "youtu.be": check_youtube_video,
-    "vgy.me": lambda browser, session, url, code, headers: fetch_playwright_image(browser, url, headers=headers),
     "tinyurl.com": fetch_shortener_screenshot,
     "is.gd": fetch_shortener_screenshot,
     "bit.ly": fetch_shortener_screenshot,
     "rb.gy": fetch_shortener_screenshot,
-    "pastebin.com": check_text_page,
     "gotomeet.me": check_gotomeet,
-    "webex.com": check_text_page,
-    "meet.chime.in": check_text_page,
-    "discord.gg": check_discord_invite,
-    "meet.google.com": check_google_meet,
     "reddit.com": fetch_reddit_redirect,
 }
 
-async def scrape_loop():
+async def scrape_loop(worker_id: int = 0):
     global scrape_count
-    logger.info("Starting scrape loop")
+    logger.info("Worker %d: Starting scrape loop", worker_id)
     while True:
         browser = None
         p = None
@@ -1006,17 +981,12 @@ async def scrape_loop():
                         headers = None
                         code = generate_code(domain, length, charset)
                         logger.debug("Generated code for %s: %s", domain, code)
-                        if domain == "meet.google.com":
-                            formatted = f"{code[:3]}-{code[3:7]}-{code[7:]}"
-                            url = f"{base_url}/{formatted}"
-                        elif domain == "youtu.be":
-                            url = f"{base_url}/{code}"
-                        else:
-                            url = f"{base_url}/{code}"
-                        if url in tested_urls:
-                            await asyncio.sleep(0)
-                            continue
-                        tested_urls.add(url)
+                        url = f"{base_url}/{code}"
+                        async with tested_lock:
+                            if url in tested_urls:
+                                await asyncio.sleep(0)
+                                continue
+                            tested_urls.add(url)
 
                         logger.info("Checking %s", url)
 
@@ -1053,41 +1023,24 @@ async def scrape_loop():
                             logger.info(
                                 "Heartbeat: processed %d URLs", scrape_count
                             )
-                            save_distributions()
-                            save_pattern_stats()
-                            load_distributions()
-                            load_pattern_stats()
-                            save_domain_stats()
-                            load_domain_stats()
+                            async with save_lock:
+                                save_distributions()
+                                save_pattern_stats()
+                                load_distributions()
+                                load_pattern_stats()
+                                save_domain_stats()
+                                load_domain_stats()
                         elif scrape_count % SAVE_STATS_EVERY == 0:
                             logger.info(
                                 "Heartbeat: processed %d URLs", scrape_count
                             )
-                            save_distributions()
-                            save_pattern_stats()
-                            load_distributions()
-                            load_pattern_stats()
+                            async with save_lock:
+                                save_distributions()
+                                save_pattern_stats()
+                                load_distributions()
+                                load_pattern_stats()
 
-                        if domain == "youtu.be":
-                            if not result:
-                                update_domain_weight(domain, False)
-                                await asyncio.sleep(rate_limit)
-                                continue
-                            logger.info("Found video %s", url)
-                            _update_distribution(domain, code)
-                            update_domain_weight(domain, True)
-                            channel = client.get_channel(CHANNEL_ID)
-                            if not channel:
-                                logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
-                            else:
-                                try:
-                                    await asyncio.wait_for(
-                                        channel.send(url),
-                                        timeout=10,
-                                    )
-                                except Exception as e:
-                                    logger.error("Failed to send message to Discord: %s", e)
-                        elif domain in TEXT_DOMAINS:
+                        if domain in TEXT_DOMAINS:
                             if not result:
                                 update_domain_weight(domain, False)
                                 await asyncio.sleep(rate_limit)
