@@ -1,4 +1,4 @@
-# Filebox Search
+# Cloud Scraper
 
 This bot attempts to discover publicly accessible media by generating random short codes for a variety of hosting services and checking which links are valid. Any discovered content is posted to a Discord channel.
 

@@ -761,6 +761,11 @@ async def fetch_shortener_screenshot(
                     return None
                 if final_host in {"youtu.be", "www.youtube.com", "youtube.com"}:
                     return final_url, None
+
+                content_type = resp.headers.get("Content-Type", "").lower()
+                if content_type.startswith("image/") or content_type.startswith("video/"):
+                    return final_url, None
+
                 text = ""
                 try:
                     text = await resp.text(errors="ignore")
