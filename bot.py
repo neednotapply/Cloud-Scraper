@@ -110,9 +110,10 @@ client = discord.Client(intents=intents)
 
 scrape_tasks: list[asyncio.Task] = []
 
-# Number of concurrent scraping workers to run. This can also be overridden
-# via the SCRAPE_WORKERS environment variable.
-SCRAPE_WORKERS = int(os.environ.get("SCRAPE_WORKERS", "1"))
+# Number of concurrent scraping workers to run. This can be configured in
+# config.json using the "scrape_workers" field and overridden at runtime via the
+# SCRAPE_WORKERS environment variable.
+SCRAPE_WORKERS = int(os.environ.get("SCRAPE_WORKERS", config.get("scrape_workers", 4)))
 
 tested_urls = set()
 tested_lock = asyncio.Lock()

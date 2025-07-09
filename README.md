@@ -26,7 +26,8 @@ Reddit posts are treated like redirects to the linked image or video.
 ```
 {
   "token": "YOUR_DISCORD_BOT_TOKEN",
-  "channel_id": 123456789012345678
+  "channel_id": 123456789012345678,
+  "scrape_workers": 4
 }
 ```
 
@@ -52,9 +53,10 @@ them to default empty structures on startup.
 
 ### Concurrency
 
-The scraper can run multiple workers in parallel to speed up scanning. Set the
-`SCRAPE_WORKERS` environment variable to the desired number of concurrent
-workers:
+The scraper can run multiple workers in parallel to speed up scanning. The
+number of workers can be configured in `config.json` using the `scrape_workers`
+field (defaults to `4`). You can also override this at runtime with the
+`SCRAPE_WORKERS` environment variable:
 
 ```
 SCRAPE_WORKERS=4 python bot.py
