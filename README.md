@@ -13,26 +13,13 @@ The bot has a built-in list of supported services so no additional configuration
 
 | Domain | Code length |
 | ------ | ----------- |
-| ibb.co | 8 |
-| puu.sh | 6 |
-| imgur.com / i.imgur.com | 7 |
-| cl.ly | 6 |
 | prnt.sc | 6 |
-| youtu.be | 11 (direct link `https://youtu.be/CODE`) |
-| vgy.me | 5 |
 | tinyurl.com | 6 |
 | is.gd | 6 |
 | bit.ly | 7 |
 | rb.gy | 6 |
 | app.goto.com/meeting | 9 digits |
-| webex.com | 9–11 digits |
-| meet.chime.in | 10 digits |
-| discord.gg | 7–10 characters |
-| meet.google.com | 10 letters (formatted as `abc-defg-hij`) |
-| pastebin.com | 8 |
 | reddit.com | 6 (posts parsed for media link) |
-
-Google Meet enforces rate limiting, so the bot waits longer between requests when testing this domain.
 
 Reddit posts are treated like redirects to the linked image or video.
 
@@ -63,7 +50,17 @@ Each domain also maintains a simple weight that influences how often it is selec
 If either of these files is missing or contains invalid JSON, the bot will reset
 them to default empty structures on startup.
 
-### Imgur support
+### Concurrency
 
-Imgur pages and direct `i.imgur.com` links are handled automatically without any additional configuration. Both the page URL and direct image links such as `https://i.imgur.com/rMluBf1_d.webp` will be processed.
+The scraper can run multiple workers in parallel to speed up scanning. Set the
+`SCRAPE_WORKERS` environment variable to the desired number of concurrent
+workers:
+
+```
+SCRAPE_WORKERS=4 python bot.py
+```
+
+Each worker launches its own browser instance, so increasing this value will use
+more system resources.
+
 
