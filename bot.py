@@ -15,10 +15,13 @@ import aiohttp
 import discord
 from playwright.async_api import async_playwright, Browser
 
-CONFIG_FILE = "config.json"
-STATS_FILE = "char_stats.json"
-DOMAIN_STATS_FILE = "domain_stats.json"
-PATTERN_STATS_FILE = "pattern_stats.json"
+# Resolve data files relative to this script's location so the bot can be run
+# from any working directory.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+STATS_FILE = os.path.join(BASE_DIR, "char_stats.json")
+DOMAIN_STATS_FILE = os.path.join(BASE_DIR, "domain_stats.json")
+PATTERN_STATS_FILE = os.path.join(BASE_DIR, "pattern_stats.json")
 
 if not os.path.exists(CONFIG_FILE):
     raise RuntimeError(f"Missing {CONFIG_FILE}. See config.example.json")
