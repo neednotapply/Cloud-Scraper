@@ -5,7 +5,9 @@ This bot attempts to discover publicly accessible media by generating random sho
 ## Configuration
 
 Copy `config.example.json` to `config.json` and fill in your Discord bot token
-and the channel ID you want to post found images to.
+and the channel ID you want to post found images to. The bot looks for this
+file in the same directory as `bot.py`, so ensure it is placed there even if you
+launch the script from a different working directory.
 
 The bot has a built-in list of supported services so no additional configuration is required.
 
