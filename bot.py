@@ -14,6 +14,13 @@ from urllib.parse import urlparse
 import aiohttp
 import discord
 from playwright.async_api import async_playwright, Browser
+from nio import (
+    AsyncClient,
+    LoginResponse,
+    InviteEvent,
+    MatrixRoom,
+    UploadResponse,
+)
 
 # Resolve data files relative to this script's location so the bot can be run
 # from any working directory.
@@ -30,7 +37,16 @@ with open(CONFIG_FILE, "r", encoding="utf-8") as f:
     config = json.load(f)
 
 TOKEN = config.get("token")
-CHANNEL_ID = int(config.get("channel_id", 0))
+channel_id = config.get("channel_id")
+CHANNEL_ID = int(channel_id) if channel_id else 0
+DISCORD_ENABLED = bool(TOKEN and CHANNEL_ID)
+
+# Optional Matrix configuration
+MATRIX_HOMESERVER = config.get("matrix_homeserver")
+MATRIX_USER = config.get("matrix_user")
+MATRIX_PASSWORD = config.get("matrix_password")
+MATRIX_ROOMS = config.get("matrix_rooms", [])
+MATRIX_ENABLED = bool(MATRIX_HOMESERVER and MATRIX_USER and MATRIX_PASSWORD)
 
 # Built-in domain configuration
 DOMAINS = {
@@ -112,6 +128,7 @@ intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 
 scrape_tasks: list[asyncio.Task] = []
+matrix_client: AsyncClient | None = None
 
 # Number of concurrent scraping workers to run. This can be configured in
 # config.json using the "scrape_workers" field and overridden at runtime via the
@@ -121,6 +138,64 @@ SCRAPE_WORKERS = int(os.environ.get("SCRAPE_WORKERS", config.get("scrape_workers
 tested_urls = set()
 tested_lock = asyncio.Lock()
 save_lock = asyncio.Lock()
+
+async def start_matrix_client() -> None:
+    """Login to Matrix and start the sync loop if enabled."""
+    global matrix_client
+    if not MATRIX_ENABLED:
+        return
+    matrix_client = AsyncClient(MATRIX_HOMESERVER, MATRIX_USER)
+    resp = await matrix_client.login(MATRIX_PASSWORD)
+    if isinstance(resp, LoginResponse):
+        logger.info("Logged in to Matrix as %s", MATRIX_USER)
+    else:
+        raise RuntimeError(f"Matrix login failed: {resp}")
+
+    async def on_invite(room: MatrixRoom, event: InviteEvent) -> None:
+        try:
+            await matrix_client.join(room.room_id)
+            logger.info("Joined invited room %s", room.room_id)
+        except Exception as exc:
+            logger.warning("Failed to join invited room %s: %s", room.room_id, exc)
+
+    matrix_client.add_event_callback(on_invite, InviteEvent)
+
+    for room in MATRIX_ROOMS:
+        try:
+            await matrix_client.join(room)
+        except Exception as exc:
+            logger.warning("Failed to join room %s: %s", room, exc)
+
+    async def sync_loop() -> None:
+        while True:
+            try:
+                await matrix_client.sync(timeout=30000)
+            except Exception as exc:
+                logger.warning("Matrix sync error: %s", exc)
+                await asyncio.sleep(5)
+            await asyncio.sleep(1)
+
+    asyncio.create_task(sync_loop())
+
+async def send_matrix_message(content: str, image_data: bytes | None = None) -> None:
+    if not matrix_client:
+        return
+    rooms = MATRIX_ROOMS or list(matrix_client.rooms.keys())
+    msg = {"msgtype": "m.text", "body": content}
+    if image_data:
+        try:
+            resp = await matrix_client.upload(image_data, content_type="image/png", filename="image.png")
+            if isinstance(resp, UploadResponse):
+                msg = {"msgtype": "m.image", "body": content, "url": resp.content_uri}
+            else:
+                logger.warning("Matrix upload failed: %s", resp)
+        except Exception as exc:
+            logger.warning("Matrix upload error: %s", exc)
+    for room in rooms:
+        try:
+            await matrix_client.room_send(room_id=room, message_type="m.room.message", content=msg)
+        except Exception as exc:
+            logger.error("Failed to send message to Matrix room %s: %s", room, exc)
 
 async def start_scrape_loop() -> None:
     """Ensure scraping workers are running and previous instances are closed."""
@@ -137,8 +212,9 @@ async def start_scrape_loop() -> None:
                 pass
     scrape_tasks = []
     logger.info("Starting %d scrape_loop workers", SCRAPE_WORKERS)
+    loop = asyncio.get_running_loop()
     for i in range(SCRAPE_WORKERS):
-        task = client.loop.create_task(scrape_loop(worker_id=i))
+        task = loop.create_task(scrape_loop(worker_id=i))
         scrape_tasks.append(task)
 
 
@@ -1058,10 +1134,8 @@ async def scrape_loop(worker_id: int = 0):
                             logger.info("Found page %s", final_url)
                             _update_distribution(domain, code)
                             update_domain_weight(domain, True)
-                            channel = client.get_channel(CHANNEL_ID)
-                            if not channel:
-                                logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
-                            else:
+                            channel = client.get_channel(CHANNEL_ID) if DISCORD_ENABLED else None
+                            if channel:
                                 try:
                                     await asyncio.wait_for(
                                         channel.send(final_url),
@@ -1069,6 +1143,9 @@ async def scrape_loop(worker_id: int = 0):
                                     )
                                 except Exception as e:
                                     logger.error("Failed to send message to Discord: %s", e)
+                            elif DISCORD_ENABLED:
+                                logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
+                            await send_matrix_message(final_url)
                         elif domain in SHORTENER_DOMAINS:
                             if not result:
                                 update_domain_weight(domain, False)
@@ -1078,10 +1155,8 @@ async def scrape_loop(worker_id: int = 0):
                             logger.info("Found redirect %s -> %s", url, final_url)
                             _update_distribution(domain, code)
                             update_domain_weight(domain, True)
-                            channel = client.get_channel(CHANNEL_ID)
-                            if not channel:
-                                logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
-                            else:
+                            channel = client.get_channel(CHANNEL_ID) if DISCORD_ENABLED else None
+                            if channel:
                                 try:
                                     if screenshot_data:
                                         file = discord.File(io.BytesIO(screenshot_data), filename="screenshot.png")
@@ -1108,6 +1183,10 @@ async def scrape_loop(worker_id: int = 0):
                                         )
                                 except Exception as e:
                                     logger.error("Failed to send message to Discord: %s", e)
+                            elif DISCORD_ENABLED:
+                                logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
+                            content = f"`{url}` -> {final_url}"
+                            await send_matrix_message(content, screenshot_data)
                         else:
                             image_data = result
                             if image_data is None:
@@ -1119,10 +1198,8 @@ async def scrape_loop(worker_id: int = 0):
                             _update_distribution(domain, code)
                             update_domain_weight(domain, True)
 
-                            channel = client.get_channel(CHANNEL_ID)
-                            if not channel:
-                                logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
-                            else:
+                            channel = client.get_channel(CHANNEL_ID) if DISCORD_ENABLED else None
+                            if channel:
                                 try:
                                     file = discord.File(io.BytesIO(image_data), filename="image.png")
                                     embed = discord.Embed(url=url)
@@ -1133,6 +1210,9 @@ async def scrape_loop(worker_id: int = 0):
                                     )
                                 except Exception as e:
                                     logger.error("Failed to send message to Discord: %s", e)
+                            elif DISCORD_ENABLED:
+                                logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
+                            await send_matrix_message(url, image_data)
 
                         await asyncio.sleep(rate_limit)
                     except Exception:
@@ -1182,10 +1262,18 @@ def generate_code(domain: str, length: int, charset: str) -> str:
         result.append(random.choices(chars, weights=weights, k=1)[0])
     return "".join(result)
 
-if __name__ == "__main__":
+async def main() -> None:
     load_distributions()
     load_pattern_stats()
     load_domain_stats()
-    if not TOKEN or not CHANNEL_ID:
-        raise RuntimeError("token and channel_id must be set in config.json")
-    client.run(TOKEN)
+    if MATRIX_ENABLED:
+        await start_matrix_client()
+    if DISCORD_ENABLED:
+        await client.start(TOKEN)
+    else:
+        await start_scrape_loop()
+        await asyncio.Event().wait()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

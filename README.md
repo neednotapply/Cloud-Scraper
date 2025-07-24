@@ -5,7 +5,8 @@ This bot attempts to discover publicly accessible media by generating random sho
 ## Configuration
 
 Copy `config.example.json` to `config.json` and fill in your Discord bot token
-and the channel ID you want to post found images to. The bot looks for this
+and the channel ID you want to post found images to. Optionally provide Matrix
+credentials to send messages to Matrix rooms. The bot looks for this
 file in the same directory as `bot.py`, so ensure it is placed there even if you
 launch the script from a different working directory.
 
@@ -29,9 +30,17 @@ Reddit posts are treated like redirects to the linked image or video.
 {
   "token": "YOUR_DISCORD_BOT_TOKEN",
   "channel_id": 123456789012345678,
-  "scrape_workers": 4
+  "scrape_workers": 4,
+  "matrix_homeserver": "https://matrix.org",
+  "matrix_user": "@bot:matrix.org",
+  "matrix_password": "YOUR_MATRIX_PASSWORD",
+  "matrix_rooms": ["!roomid:matrix.org"]
 }
 ```
+
+`matrix_rooms` is optional. If omitted, the bot will post to every room it has
+joined and will automatically join new rooms when invited. Omit the Discord or
+Matrix credentials entirely to disable posting to that platform.
 
 ## Running
 
@@ -43,7 +52,7 @@ playwright install
 python bot.py
 ```
 
-The bot will log attempts and post any discovered images to the configured Discord channel.
+The bot will log attempts and post any discovered images to the configured Discord channel and/or Matrix rooms.
 
 Character frequency statistics are saved to `char_stats.json` and used to bias code generation toward more common letters for each domain. Only successful codes contribute to this file. The file is loaded when the bot starts and written back regularly alongside the domain weights so learning persists between runs.
 Additional heuristics about letter case and digit placement are recorded in `pattern_stats.json` using only successful codes.
