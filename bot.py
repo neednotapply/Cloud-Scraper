@@ -202,14 +202,15 @@ async def start_matrix_client() -> None:
 
     asyncio.create_task(sync_loop())
 
-async def send_matrix_message(content: str, image_data: bytes | None = None) -> None:
+async def send_matrix_message(content: str | None = None, image_data: bytes | None = None) -> None:
     if not matrix_client:
         return
     rooms = MATRIX_ROOMS or list(matrix_client.rooms.keys())
-    html_content = _markdown_to_html(content)
+    text = content or ""
+    html_content = _markdown_to_html(text)
     msg = {
         "msgtype": "m.text",
-        "body": content,
+        "body": text,
         "format": "org.matrix.custom.html",
         "formatted_body": html_content,
     }
@@ -217,7 +218,7 @@ async def send_matrix_message(content: str, image_data: bytes | None = None) -> 
         try:
             # matrix-nio's upload expects a file-like object or async provider,
             # so wrap the bytes in a BytesIO buffer
-            resp = await matrix_client.upload(
+            resp, _ = await matrix_client.upload(
                 io.BytesIO(image_data),
                 content_type="image/png",
                 filename="image.png",
@@ -225,7 +226,7 @@ async def send_matrix_message(content: str, image_data: bytes | None = None) -> 
             if isinstance(resp, UploadResponse):
                 msg = {
                     "msgtype": "m.image",
-                    "body": content,
+                    "body": text or "image.png",
                     "url": resp.content_uri,
                     "format": "org.matrix.custom.html",
                     "formatted_body": html_content,
@@ -854,7 +855,7 @@ async def fetch_shortener_screenshot(
     code: str,
     headers=None,
 ) -> tuple[str, bytes | None] | None:
-    """Follow the shortener and return final URL with a screenshot."""
+    """Follow the shortener and return the final URL with any embed data."""
     try:
         async with session.get(url, headers=headers, timeout=10, allow_redirects=True) as resp:
             if resp.status == 404:
@@ -867,6 +868,19 @@ async def fetch_shortener_screenshot(
                 if initial_host == "rb.gy" and final_url.startswith("https://free-url-shortener.rb.gy/"):
                     logger.info("Checked %s -> not found (homepage redirect)", url)
                     return None
+
+                if final_host in {"youtu.be", "www.youtube.com", "youtube.com"}:
+                    return final_url, None
+
+                if final_host == "prnt.sc":
+                    image = await fetch_prntsc_image(browser, session, final_url, headers=headers)
+                    if image:
+                        return final_url, image
+                    return None
+
+                content_type = resp.headers.get("Content-Type", "").lower()
+                if content_type.startswith("image/") or content_type.startswith("video/"):
+                    return final_url, None
 
                 text = ""
                 try:
@@ -1183,13 +1197,17 @@ async def scrape_loop(worker_id: int = 0):
                                 try:
                                     if screenshot_data:
                                         file = discord.File(io.BytesIO(screenshot_data), filename="screenshot.png")
-                                        embed = discord.Embed(url=final_url)
+                                        embed = discord.Embed()
                                         embed.set_image(url="attachment://screenshot.png")
-                                        display_host = urlparse(final_url).hostname or final_url
-                                        if display_host.startswith("www."):
-                                            display_host = display_host[4:]
-                                        link = f"[{display_host}]({final_url})"
-                                        content = f"`{url}` -> {link}"
+                                        final_host = urlparse(final_url).hostname or final_url
+                                        if final_host.startswith("www."):
+                                            final_host = final_host[4:]
+                                        if final_host == "prnt.sc":
+                                            content = f"`{url}`"
+                                        else:
+                                            embed.url = final_url
+                                            link = f"[{final_host}]({final_url})"
+                                            content = f"`{url}` -> {link}"
                                         await asyncio.wait_for(
                                             channel.send(content, embed=embed, file=file),
                                             timeout=10,
@@ -1208,8 +1226,12 @@ async def scrape_loop(worker_id: int = 0):
                                     logger.error("Failed to send message to Discord: %s", e)
                             elif DISCORD_ENABLED:
                                 logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
-                            content = f"`{url}` -> {final_url}"
-                            await send_matrix_message(content, screenshot_data)
+                            final_host = urlparse(final_url).hostname or final_url
+                            if final_host == "prnt.sc" and screenshot_data:
+                                await send_matrix_message(None, screenshot_data)
+                            else:
+                                content = f"`{url}` -> {final_url}"
+                                await send_matrix_message(content, screenshot_data)
                         else:
                             image_data = result
                             if image_data is None:
