@@ -202,7 +202,13 @@ async def start_matrix_client() -> None:
 
     asyncio.create_task(sync_loop())
 
-async def send_matrix_message(content: str | None = None, image_data: bytes | None = None) -> None:
+async def send_matrix_message(
+    content: str | None = None,
+    media_data: bytes | None = None,
+    *,
+    content_type: str = "image/png",
+    filename: str = "image.png",
+) -> None:
     if not matrix_client:
         return
     rooms = MATRIX_ROOMS or list(matrix_client.rooms.keys())
@@ -214,19 +220,24 @@ async def send_matrix_message(content: str | None = None, image_data: bytes | No
         "format": "org.matrix.custom.html",
         "formatted_body": html_content,
     }
-    if image_data:
+    if media_data:
         try:
             # matrix-nio's upload expects a file-like object or async provider,
             # so wrap the bytes in a BytesIO buffer
             resp, _ = await matrix_client.upload(
-                io.BytesIO(image_data),
-                content_type="image/png",
-                filename="image.png",
+                io.BytesIO(media_data),
+                content_type=content_type,
+                filename=filename,
             )
             if isinstance(resp, UploadResponse):
+                msgtype = "m.image"
+                if content_type.startswith("video"):
+                    msgtype = "m.video"
+                elif not content_type.startswith("image"):
+                    msgtype = "m.file"
                 msg = {
-                    "msgtype": "m.image",
-                    "body": text or "image.png",
+                    "msgtype": msgtype,
+                    "body": text or filename,
                     "url": resp.content_uri,
                     "format": "org.matrix.custom.html",
                     "formatted_body": html_content,
@@ -463,6 +474,33 @@ async def fetch_image(session: aiohttp.ClientSession, url: str, headers=None) ->
     except Exception as exc:
         logger.warning("Checked %s -> error: %s", url, exc)
     return None
+
+async def fetch_media(session: aiohttp.ClientSession, url: str, headers=None) -> tuple[bytes, str] | None:
+    """Fetch any media content and return bytes with its content type."""
+    try:
+        async with session.get(url, headers=headers, timeout=15) as resp:
+            status = resp.status
+            if status == 200:
+                data = await resp.read()
+                return data, resp.headers.get("Content-Type", "application/octet-stream")
+            logger.info("Checked %s -> HTTP %s", url, status)
+    except asyncio.TimeoutError:
+        logger.warning("Checked %s -> not found (timeout)", url)
+    except Exception as exc:
+        logger.warning("Checked %s -> error: %s", url, exc)
+    return None
+
+def _guess_extension(url: str, content_type: str) -> str:
+    ext = ""
+    if "/" in content_type:
+        import mimetypes
+
+        ext = mimetypes.guess_extension(content_type.split(";", 1)[0]) or ""
+    if not ext:
+        path = urlparse(url).path
+        if "." in path:
+            ext = os.path.splitext(path)[1]
+    return ext or ""
 
 # --- Additional helpers for prnt.sc scraping taken from neednotapply/Screenshot_Stealer-Matrix ---
 async def prntsc_get_image_url(browser: Browser, url: str) -> str | None:
@@ -1202,36 +1240,76 @@ async def scrape_loop(worker_id: int = 0):
                                         final_host = urlparse(final_url).hostname or final_url
                                         if final_host.startswith("www."):
                                             final_host = final_host[4:]
-                                        if final_host == "prnt.sc":
-                                            content = f"`{url}`"
-                                        else:
-                                            embed.url = final_url
-                                            link = f"[{final_host}]({final_url})"
-                                            content = f"`{url}` -> {link}"
+                                        embed.url = final_url
+                                        link = f"[{final_host}]({final_url})"
+                                        content = f"`{url}` -> {link}"
                                         await asyncio.wait_for(
                                             channel.send(content, embed=embed, file=file),
                                             timeout=10,
                                         )
                                     else:
-                                        display_host = urlparse(final_url).hostname or final_url
-                                        if display_host.startswith("www."):
-                                            display_host = display_host[4:]
-                                        link = f"[{display_host}]({final_url})"
-                                        content = f"`{url}` -> {link}"
-                                        await asyncio.wait_for(
-                                            channel.send(content),
-                                            timeout=10,
-                                        )
+                                        media = await fetch_media(session, final_url)
+                                        if media:
+                                            data, ctype = media
+                                            ext = _guess_extension(final_url, ctype) or ".bin"
+                                            filename = f"file{ext}"
+                                            file = discord.File(io.BytesIO(data), filename=filename)
+                                            link_host = urlparse(final_url).hostname or final_url
+                                            if link_host.startswith("www."):
+                                                link_host = link_host[4:]
+                                            link = f"[{link_host}]({final_url})"
+                                            content = f"`{url}` -> {link}"
+                                            if ctype.startswith("image"):
+                                                embed = discord.Embed(url=final_url)
+                                                embed.set_image(url=f"attachment://{filename}")
+                                                await asyncio.wait_for(
+                                                    channel.send(content, embed=embed, file=file),
+                                                    timeout=10,
+                                                )
+                                            else:
+                                                await asyncio.wait_for(
+                                                    channel.send(content, file=file),
+                                                    timeout=10,
+                                                )
+                                        else:
+                                            display_host = urlparse(final_url).hostname or final_url
+                                            if display_host.startswith("www."):
+                                                display_host = display_host[4:]
+                                            link = f"[{display_host}]({final_url})"
+                                            content = f"`{url}` -> {link}"
+                                            await asyncio.wait_for(
+                                                channel.send(content),
+                                                timeout=10,
+                                            )
                                 except Exception as e:
                                     logger.error("Failed to send message to Discord: %s", e)
                             elif DISCORD_ENABLED:
                                 logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
-                            final_host = urlparse(final_url).hostname or final_url
-                            if final_host == "prnt.sc" and screenshot_data:
-                                await send_matrix_message(None, screenshot_data)
+                            link_host = urlparse(final_url).hostname or final_url
+                            if link_host.startswith("www."):
+                                link_host = link_host[4:]
+                            link = f"[{link_host}]({final_url})"
+                            content = f"`{url}` -> {link}"
+                            if screenshot_data:
+                                await send_matrix_message(
+                                    content,
+                                    screenshot_data,
+                                    content_type="image/png",
+                                    filename="screenshot.png",
+                                )
                             else:
-                                content = f"`{url}` -> {final_url}"
-                                await send_matrix_message(content, screenshot_data)
+                                media = await fetch_media(session, final_url)
+                                if media:
+                                    data, ctype = media
+                                    ext = _guess_extension(final_url, ctype) or ".bin"
+                                    await send_matrix_message(
+                                        content,
+                                        data,
+                                        content_type=ctype,
+                                        filename=f"file{ext}",
+                                    )
+                                else:
+                                    await send_matrix_message(content)
                         else:
                             image_data = result
                             if image_data is None:
@@ -1257,7 +1335,12 @@ async def scrape_loop(worker_id: int = 0):
                                     logger.error("Failed to send message to Discord: %s", e)
                             elif DISCORD_ENABLED:
                                 logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
-                            await send_matrix_message(url, image_data)
+                            await send_matrix_message(
+                                url,
+                                image_data,
+                                content_type="image/png",
+                                filename="image.png",
+                            )
 
                         await asyncio.sleep(rate_limit)
                     except Exception:
