@@ -518,7 +518,8 @@ async def fetch_prntsc_image(browser: Browser, session: aiohttp.ClientSession, u
     return await fetch_image(session, image_url, headers=headers)
 
 async def _inner_fetch_playwright_image(browser: Browser, url: str, headers=None) -> bytes | None:
-    context = await browser.new_context()
+    """Capture a screenshot of ``url`` with Playwright."""
+    context = await browser.new_context(viewport={"width": 1280, "height": 720})
     try:
         page = await context.new_page()
         try:
@@ -548,28 +549,13 @@ async def _inner_fetch_playwright_image(browser: Browser, url: str, headers=None
                 logger.info("Checked %s -> not found (Puu.sh body)", url)
                 return None
 
-            try:
-                image_url = await page.get_attribute('meta[property="og:image"]', 'content', timeout=3000)
-            except Exception:
-                image_url = None
-
-            # If this is a prnt.sc link, ensure the image is hosted on
-            # image.prntscr.com. Links pointing elsewhere (e.g. imgur) usually
-            # indicate the screenshot no longer exists.
-            if url.startswith("https://prnt.sc") and image_url:
-                if not image_url.startswith("https://image.prntscr.com"):
-                    logger.info("Checked %s -> not found (prnt.sc external host)", url)
-                    image_url = None
+            screenshot = await page.screenshot(full_page=False)
+            return screenshot
         finally:
             try:
                 await asyncio.shield(page.close())
             except Exception as exc:
                 logger.warning("Failed to close page for %s: %s", url, exc)
-
-        if image_url:
-            async with aiohttp.ClientSession() as session:
-                return await fetch_image(session, image_url, headers=headers)
-        return None
     finally:
         await context.close()
 
@@ -875,12 +861,6 @@ async def fetch_shortener_screenshot(
                 if initial_host == "rb.gy" and final_url.startswith("https://free-url-shortener.rb.gy/"):
                     logger.info("Checked %s -> not found (homepage redirect)", url)
                     return None
-                if final_host in {"youtu.be", "www.youtube.com", "youtube.com"}:
-                    return final_url, None
-
-                content_type = resp.headers.get("Content-Type", "").lower()
-                if content_type.startswith("image/") or content_type.startswith("video/"):
-                    return final_url, None
 
                 text = ""
                 try:
