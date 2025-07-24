@@ -24,7 +24,8 @@ The bot has a built-in list of supported services so no additional configuration
 | app.goto.com/meeting | 9 digits |
 | reddit.com | 6 (posts parsed for media link) |
 
-Reddit posts are treated like redirects to the linked image or video.
+Reddit posts are treated like redirects to the linked image or video and the
+media is uploaded directly when possible.
 
 ```
 {
