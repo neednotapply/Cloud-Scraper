@@ -1,3 +1,4 @@
 discord.py>=2.5.2
 aiohttp>=3.8
 playwright>=1.42
+matrix-nio>=0.24
