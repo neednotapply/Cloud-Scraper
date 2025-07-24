@@ -8,6 +8,31 @@ import re
 import string
 import time
 import html
+
+MARKDOWN_PATTERN = re.compile(
+    r"`(?P<code>[^`]+)`|\[(?P<text>[^\]]+)\]\((?P<url>[^)]+)\)", re.DOTALL
+)
+
+
+def _markdown_to_html(text: str) -> str:
+    """Convert a limited subset of Markdown to HTML for Matrix messages."""
+
+    def repl(match: re.Match) -> str:
+        code = match.group("code")
+        if code is not None:
+            return f"<code>{html.escape(code)}</code>"
+        label = match.group("text")
+        url = match.group("url")
+        return f'<a href="{html.escape(url)}">{html.escape(label)}</a>'
+
+    result: list[str] = []
+    last = 0
+    for m in MARKDOWN_PATTERN.finditer(text):
+        result.append(html.escape(text[last:m.start()]))
+        result.append(repl(m))
+        last = m.end()
+    result.append(html.escape(text[last:]))
+    return "".join(result)
 from collections import Counter, defaultdict
 from urllib.parse import urlparse
 
@@ -181,12 +206,24 @@ async def send_matrix_message(content: str, image_data: bytes | None = None) -> 
     if not matrix_client:
         return
     rooms = MATRIX_ROOMS or list(matrix_client.rooms.keys())
-    msg = {"msgtype": "m.text", "body": content}
+    html_content = _markdown_to_html(content)
+    msg = {
+        "msgtype": "m.text",
+        "body": content,
+        "format": "org.matrix.custom.html",
+        "formatted_body": html_content,
+    }
     if image_data:
         try:
             resp = await matrix_client.upload(image_data, content_type="image/png", filename="image.png")
             if isinstance(resp, UploadResponse):
-                msg = {"msgtype": "m.image", "body": content, "url": resp.content_uri}
+                msg = {
+                    "msgtype": "m.image",
+                    "body": content,
+                    "url": resp.content_uri,
+                    "format": "org.matrix.custom.html",
+                    "formatted_body": html_content,
+                }
             else:
                 logger.warning("Matrix upload failed: %s", resp)
         except Exception as exc:
