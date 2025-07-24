@@ -215,7 +215,13 @@ async def send_matrix_message(content: str, image_data: bytes | None = None) -> 
     }
     if image_data:
         try:
-            resp = await matrix_client.upload(image_data, content_type="image/png", filename="image.png")
+            # matrix-nio's upload expects a file-like object or async provider,
+            # so wrap the bytes in a BytesIO buffer
+            resp = await matrix_client.upload(
+                io.BytesIO(image_data),
+                content_type="image/png",
+                filename="image.png",
+            )
             if isinstance(resp, UploadResponse):
                 msg = {
                     "msgtype": "m.image",
