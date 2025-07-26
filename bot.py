@@ -34,7 +34,7 @@ def _markdown_to_html(text: str) -> str:
     result.append(html.escape(text[last:]))
     return "".join(result)
 from collections import Counter, defaultdict
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 import aiohttp
 import discord
@@ -115,6 +115,10 @@ SHORTENER_DOMAINS = {
     "rb.gy",
     "reddit.com",
 } & set(DOMAINS.keys())
+
+# Domains that resolve to YouTube videos. These require a thumbnail preview
+# rather than downloading the page contents.
+YOUTUBE_HOSTS = {"youtu.be", "youtube.com", "www.youtube.com"}
 
 
 async def capture_page_screenshot(
@@ -501,6 +505,22 @@ def _guess_extension(url: str, content_type: str) -> str:
         if "." in path:
             ext = os.path.splitext(path)[1]
     return ext or ""
+
+def get_youtube_thumbnail_url(video_url: str) -> str | None:
+    """Return the standard thumbnail URL for a YouTube video."""
+    vid = None
+    parsed = urlparse(video_url)
+    host = (parsed.hostname or "").lower()
+    if host == "youtu.be":
+        vid = parsed.path.lstrip("/")
+    elif host in {"youtube.com", "www.youtube.com"}:
+        qs = parse_qs(parsed.query)
+        vid_list = qs.get("v")
+        if vid_list:
+            vid = vid_list[0]
+    if vid:
+        return f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
+    return None
 
 # --- Additional helpers for prnt.sc scraping taken from neednotapply/Screenshot_Stealer-Matrix ---
 async def prntsc_get_image_url(browser: Browser, url: str) -> str | None:
@@ -1241,55 +1261,92 @@ async def scrape_loop(worker_id: int = 0):
                                         if final_host.startswith("www."):
                                             final_host = final_host[4:]
                                         embed.url = final_url
-                                        link = f"[{final_host}]({final_url})"
-                                        content = f"`{url}` -> {link}"
+                                        display_text = url if domain in SHORTENER_DOMAINS else final_host
+                                        link = f"[{display_text}]({final_url})"
+                                        content = link if domain == "reddit.com" else f"`{url}` -> {link}"
                                         await asyncio.wait_for(
                                             channel.send(content, embed=embed, file=file),
                                             timeout=10,
                                         )
                                     else:
-                                        media = await fetch_media(session, final_url)
-                                        if media:
-                                            data, ctype = media
-                                            ext = _guess_extension(final_url, ctype) or ".bin"
-                                            filename = f"file{ext}"
-                                            file = discord.File(io.BytesIO(data), filename=filename)
-                                            link_host = urlparse(final_url).hostname or final_url
-                                            if link_host.startswith("www."):
-                                                link_host = link_host[4:]
-                                            link = f"[{link_host}]({final_url})"
-                                            content = f"`{url}` -> {link}"
-                                            if ctype.startswith("image"):
+                                        final_host = urlparse(final_url).hostname or ""
+                                        is_youtube = final_host in YOUTUBE_HOSTS
+                                        if is_youtube:
+                                            thumb = None
+                                            thumb_url = get_youtube_thumbnail_url(final_url)
+                                            if thumb_url:
+                                                thumb = await fetch_image(session, thumb_url)
+                                            if thumb:
+                                                file = discord.File(io.BytesIO(thumb), filename="youtube.jpg")
                                                 embed = discord.Embed(url=final_url)
-                                                embed.set_image(url=f"attachment://{filename}")
+                                                embed.set_image(url="attachment://youtube.jpg")
+                                                display_text = url
+                                                link = f"[{display_text}]({final_url})"
+                                                content = link if domain == "reddit.com" else f"`{url}` -> {link}"
                                                 await asyncio.wait_for(
                                                     channel.send(content, embed=embed, file=file),
                                                     timeout=10,
                                                 )
                                             else:
+                                                display_text = url
+                                                link = f"[{display_text}]({final_url})"
+                                                content = link if domain == "reddit.com" else f"`{url}` -> {link}"
                                                 await asyncio.wait_for(
-                                                    channel.send(content, file=file),
+                                                    channel.send(content),
                                                     timeout=10,
                                                 )
                                         else:
-                                            display_host = urlparse(final_url).hostname or final_url
-                                            if display_host.startswith("www."):
-                                                display_host = display_host[4:]
-                                            link = f"[{display_host}]({final_url})"
-                                            content = f"`{url}` -> {link}"
-                                            await asyncio.wait_for(
-                                                channel.send(content),
-                                                timeout=10,
-                                            )
+                                            media = await fetch_media(session, final_url)
+                                            if media:
+                                                data, ctype = media
+                                                ext = _guess_extension(final_url, ctype) or ".bin"
+                                                filename = f"file{ext}"
+                                                file = discord.File(io.BytesIO(data), filename=filename)
+                                                if domain in SHORTENER_DOMAINS:
+                                                    display_text = url
+                                                else:
+                                                    display_text = urlparse(final_url).hostname or final_url
+                                                    if display_text.startswith("www."):
+                                                        display_text = display_text[4:]
+                                                link = f"[{display_text}]({final_url})"
+                                                content = link if domain == "reddit.com" else f"`{url}` -> {link}"
+                                                if ctype.startswith("image"):
+                                                    embed = discord.Embed(url=final_url)
+                                                    embed.set_image(url=f"attachment://{filename}")
+                                                    await asyncio.wait_for(
+                                                        channel.send(content, embed=embed, file=file),
+                                                        timeout=10,
+                                                    )
+                                                else:
+                                                    await asyncio.wait_for(
+                                                        channel.send(content, file=file),
+                                                        timeout=10,
+                                                    )
+                                            else:
+                                                if domain in SHORTENER_DOMAINS:
+                                                    display_text = url
+                                                else:
+                                                    display_text = urlparse(final_url).hostname or final_url
+                                                    if display_text.startswith("www."):
+                                                        display_text = display_text[4:]
+                                                link = f"[{display_text}]({final_url})"
+                                                content = link if domain == "reddit.com" else f"`{url}` -> {link}"
+                                                await asyncio.wait_for(
+                                                    channel.send(content),
+                                                    timeout=10,
+                                                )
                                 except Exception as e:
                                     logger.error("Failed to send message to Discord: %s", e)
                             elif DISCORD_ENABLED:
                                 logger.warning("Could not find Discord channel with ID %s", CHANNEL_ID)
-                            link_host = urlparse(final_url).hostname or final_url
-                            if link_host.startswith("www."):
-                                link_host = link_host[4:]
-                            link = f"[{link_host}]({final_url})"
-                            content = f"`{url}` -> {link}"
+                            if domain in SHORTENER_DOMAINS:
+                                display_text = url
+                            else:
+                                display_text = urlparse(final_url).hostname or final_url
+                                if display_text.startswith("www."):
+                                    display_text = display_text[4:]
+                            link = f"[{display_text}]({final_url})"
+                            content = link if domain == "reddit.com" else f"`{url}` -> {link}"
                             if screenshot_data:
                                 await send_matrix_message(
                                     content,
@@ -1298,18 +1355,35 @@ async def scrape_loop(worker_id: int = 0):
                                     filename="screenshot.png",
                                 )
                             else:
-                                media = await fetch_media(session, final_url)
-                                if media:
-                                    data, ctype = media
-                                    ext = _guess_extension(final_url, ctype) or ".bin"
-                                    await send_matrix_message(
-                                        content,
-                                        data,
-                                        content_type=ctype,
-                                        filename=f"file{ext}",
-                                    )
+                                final_host = urlparse(final_url).hostname or ""
+                                is_youtube = final_host in YOUTUBE_HOSTS
+                                if is_youtube:
+                                    thumb_data = None
+                                    thumb_url = get_youtube_thumbnail_url(final_url)
+                                    if thumb_url:
+                                        thumb_data = await fetch_image(session, thumb_url)
+                                    if thumb_data:
+                                        await send_matrix_message(
+                                            content,
+                                            thumb_data,
+                                            content_type="image/jpeg",
+                                            filename="youtube.jpg",
+                                        )
+                                    else:
+                                        await send_matrix_message(content)
                                 else:
-                                    await send_matrix_message(content)
+                                    media = await fetch_media(session, final_url)
+                                    if media:
+                                        data, ctype = media
+                                        ext = _guess_extension(final_url, ctype) or ".bin"
+                                        await send_matrix_message(
+                                            content,
+                                            data,
+                                            content_type=ctype,
+                                            filename=f"file{ext}",
+                                        )
+                                    else:
+                                        await send_matrix_message(content)
                         else:
                             image_data = result
                             if image_data is None:
