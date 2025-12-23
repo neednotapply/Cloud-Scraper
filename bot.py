@@ -101,6 +101,23 @@ DOMAIN_WEIGHTS = {domain: cfg.get("weight", 1.0) for domain, cfg in DOMAINS.item
 WEIGHT_INCREASE = 0.1  # Applied when a link is valid
 WEIGHT_DECREASE = 0.01  # Applied when a link is invalid
 MAX_DOMAIN_WEIGHT = 5.0
+COOLDOWN_BASE_SECONDS = 30.0
+COOLDOWN_MAX_SECONDS = 10 * 60.0
+WAF_STATUS_CODES = {403, 429, 503, 520, 521, 522, 524}
+WAF_MARKERS = (
+    "cloudflare",
+    "attention required",
+    "access denied",
+    "you have been blocked",
+    "request blocked",
+    "unusual traffic",
+    "verify you are human",
+    "verifying you are human",
+    "checking if the site connection is secure",
+    "cf-error",
+    "captcha",
+    "waf",
+)
 
 # Domains that host text rather than images. For these we simply verify that a
 # page exists and send the link without attempting to embed an image.
@@ -169,6 +186,8 @@ tested_lock = asyncio.Lock()
 save_lock = asyncio.Lock()
 domain_rate_locks: dict[str, asyncio.Lock] = {}
 domain_last_request: dict[str, float] = {}
+domain_cooldown_until: dict[str, float] = {}
+domain_cooldown_steps: dict[str, int] = {}
 
 
 def _get_domain_rate_lock(domain: str) -> asyncio.Lock:
@@ -353,9 +372,65 @@ def update_domain_weight(domain: str, valid: bool) -> None:
         DOMAIN_WEIGHTS[domain] = max(1.0, DOMAIN_WEIGHTS[domain] - WEIGHT_DECREASE)
 
 
+def reduce_domain_weight(domain: str, factor: float = 0.5) -> tuple[float, float]:
+    """Reduce a domain weight by a factor, returning the old/new values."""
+    old = DOMAIN_WEIGHTS.get(domain, 1.0)
+    new = max(1.0, old * factor)
+    DOMAIN_WEIGHTS[domain] = new
+    return old, new
+
+
+def _detect_waf_block(status: int, text_lower: str) -> str | None:
+    if status in WAF_STATUS_CODES:
+        return f"status {status}"
+    for marker in WAF_MARKERS:
+        if marker in text_lower:
+            return f"marker '{marker}'"
+    return None
+
+
+def trigger_domain_cooldown(domain: str, reason: str) -> None:
+    now = time.monotonic()
+    step = domain_cooldown_steps.get(domain, 0) + 1
+    domain_cooldown_steps[domain] = step
+    duration = min(COOLDOWN_MAX_SECONDS, COOLDOWN_BASE_SECONDS * (2 ** (step - 1)))
+    until = max(domain_cooldown_until.get(domain, 0.0), now + duration)
+    domain_cooldown_until[domain] = until
+    old_weight, new_weight = reduce_domain_weight(domain, factor=0.5)
+    logger.warning(
+        "Cooldown triggered for %s (%s). Backing off for %.1fs (step %d). "
+        "Weight %.2f -> %.2f",
+        domain,
+        reason,
+        until - now,
+        step,
+        old_weight,
+        new_weight,
+    )
+
+
+def get_domain_cooldown_remaining(domain: str) -> float:
+    until = domain_cooldown_until.get(domain, 0.0)
+    remaining = until - time.monotonic()
+    return remaining if remaining > 0 else 0.0
+
+
+def reset_domain_cooldown(domain: str) -> None:
+    if domain in domain_cooldown_steps:
+        domain_cooldown_steps.pop(domain, None)
+    if domain in domain_cooldown_until:
+        domain_cooldown_until.pop(domain, None)
+
+
 def choose_domain() -> str:
     """Return a domain based on current weights."""
-    domains = list(DOMAIN_WEIGHTS.keys())
+    domains = [
+        domain
+        for domain in DOMAIN_WEIGHTS.keys()
+        if get_domain_cooldown_remaining(domain) <= 0
+    ]
+    if not domains:
+        domains = list(DOMAIN_WEIGHTS.keys())
     weights = [DOMAIN_WEIGHTS[d] for d in domains]
     return random.choices(domains, weights=weights, k=1)[0]
 
@@ -730,8 +805,13 @@ async def check_text_page(
                 final_url = final_url.replace("https://www.reddit.com", "https://reddit.com", 1)
             final_host = urlparse(final_url).hostname or ""
             text = await resp.text(errors="ignore")
+            text_lower = text.lower()
+            block_reason = _detect_waf_block(resp.status, text_lower)
+            if block_reason and final_host.endswith("reddit.com"):
+                trigger_domain_cooldown("reddit.com", block_reason)
+                logger.info("Checked %s -> blocked (cooldown)", url)
+                return None
             if resp.status == 200:
-                text_lower = text.lower()
                 if (
                     "this page is no longer available" in text_lower
                     or "this is not the web page you are looking for" in text_lower
@@ -1008,16 +1088,20 @@ async def fetch_reddit_redirect(
     """
     try:
         async with session.get(url, headers=headers, timeout=10, allow_redirects=True) as resp:
-            if resp.status != 200:
-                logger.info("Checked %s -> HTTP %s", url, resp.status)
-                return None
-
             final_url = str(resp.url)
             if urlparse(final_url).hostname == "www.reddit.com":
                 final_url = final_url.replace("https://www.reddit.com", "https://reddit.com", 1)
 
             text = await resp.text(errors="ignore")
             text_lower = text.lower()
+            block_reason = _detect_waf_block(resp.status, text_lower)
+            if block_reason:
+                trigger_domain_cooldown("reddit.com", block_reason)
+                logger.info("Checked %s -> blocked (cooldown)", url)
+                return None
+            if resp.status != 200:
+                logger.info("Checked %s -> HTTP %s", url, resp.status)
+                return None
             if (
                 "this page is no longer available" in text_lower
                 or "this is not the web page you are looking for" in text_lower
@@ -1047,6 +1131,11 @@ async def fetch_reddit_redirect(
             try:
                 async with session.get(json_url, timeout=10) as jresp:
                     if jresp.status != 200:
+                        block_reason = _detect_waf_block(jresp.status, "")
+                        if block_reason:
+                            trigger_domain_cooldown("reddit.com", block_reason)
+                            logger.info("Checked %s -> blocked (cooldown)", url)
+                            return None
                         logger.info("Checked %s -> HTTP %s (json)", url, jresp.status)
                         return None
                     data = await jresp.json()
@@ -1166,6 +1255,15 @@ async def scrape_loop(worker_id: int = 0):
                 while True:
                     try:
                         domain = choose_domain()
+                        cooldown_remaining = get_domain_cooldown_remaining(domain)
+                        if cooldown_remaining > 0:
+                            logger.warning(
+                                "Domain %s is in cooldown for %.1fs, pausing requests",
+                                domain,
+                                cooldown_remaining,
+                            )
+                            await asyncio.sleep(cooldown_remaining)
+                            continue
                         settings = DOMAINS[domain]
                         base_url = settings["base_url"]
                         length_setting = settings.get("length", 6)
@@ -1275,6 +1373,8 @@ async def scrape_loop(worker_id: int = 0):
                             logger.info("Found redirect %s -> %s", url, final_url)
                             _update_distribution(domain, code)
                             update_domain_weight(domain, True)
+                            if domain == "reddit.com":
+                                reset_domain_cooldown(domain)
                             channel = client.get_channel(CHANNEL_ID) if DISCORD_ENABLED else None
                             if channel:
                                 try:
