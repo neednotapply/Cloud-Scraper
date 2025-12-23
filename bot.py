@@ -167,6 +167,30 @@ SCRAPE_WORKERS = int(os.environ.get("SCRAPE_WORKERS", config.get("scrape_workers
 tested_urls = set()
 tested_lock = asyncio.Lock()
 save_lock = asyncio.Lock()
+domain_rate_locks: dict[str, asyncio.Lock] = {}
+domain_last_request: dict[str, float] = {}
+
+
+def _get_domain_rate_lock(domain: str) -> asyncio.Lock:
+    lock = domain_rate_locks.get(domain)
+    if lock is None:
+        lock = asyncio.Lock()
+        domain_rate_locks[domain] = lock
+    return lock
+
+
+async def enforce_domain_rate_limit(domain: str, min_delay: float) -> None:
+    """Ensure shared rate limiting per domain across all workers."""
+    if min_delay <= 0:
+        return
+    lock = _get_domain_rate_lock(domain)
+    async with lock:
+        now = asyncio.get_running_loop().time()
+        last = domain_last_request.get(domain, 0.0)
+        wait_time = min_delay - (now - last)
+        if wait_time > 0:
+            await asyncio.sleep(wait_time)
+        domain_last_request[domain] = asyncio.get_running_loop().time()
 
 async def start_matrix_client() -> None:
     """Login to Matrix and start the sync loop if enabled."""
@@ -1168,6 +1192,7 @@ async def scrape_loop(worker_id: int = 0):
                                 continue
                             tested_urls.add(url)
 
+                        await enforce_domain_rate_limit(domain, rate_limit)
                         logger.info("Checking %s", url)
 
                         fetcher = SCRAPER_MAP.get(domain)
